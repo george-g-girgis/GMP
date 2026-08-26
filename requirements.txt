@@ -1,0 +1,10 @@
+PyQt6
+Pillow
+rembg
+onnxruntime
+pywin32
+winrt-runtime
+winrt-Windows.Media.Control
+winrt-Windows.Foundation
+winrt-Windows.Storage.Streams
+winrt-Windows.Media
