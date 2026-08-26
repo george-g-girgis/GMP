@@ -1,0 +1,39 @@
+# Virtual environment
+.venv/
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Segmentation cache
+.cache/
+
+# Config (user-specific)
+*.json
+
+# IDE
+.idea/
+.vscode/
+*.code-workspace
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Logs & crash dumps
+*.log
+crash.txt
+crash_log.txt
+
+# Test scripts (dev only)
+test_*.py
+inject.py
+
+# Build artifacts
+dist/
+build/
+*.spec
+*.exe
