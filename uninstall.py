@@ -24,9 +24,13 @@ def main():
         sys.exit(0)
 
     try:
+        from PyQt6.QtGui import QIcon
         from PyQt6.QtWidgets import QApplication, QMessageBox
 
         app = QApplication(sys.argv)
+        ico_file = Path(__file__).resolve().parent / "assets" / "app.ico"
+        if ico_file.exists():
+            app.setWindowIcon(QIcon(str(ico_file)))
 
         reply = QMessageBox.question(
             None,

@@ -35,7 +35,16 @@ log = logging.getLogger("GMP")
 # ── tray icon helpers ────────────────────────────────────────────────
 
 def _make_icon() -> QIcon:
-    """Programmatically draw a small purple music-note tray icon."""
+    """Load the application icon from assets or draw a fallback."""
+    from pathlib import Path
+    base = Path(__file__).resolve().parent
+    png_path = base / "assets" / "icon.png"
+    ico_path = base / "assets" / "app.ico"
+    if png_path.exists():
+        return QIcon(str(png_path))
+    if ico_path.exists():
+        return QIcon(str(ico_path))
+
     pm = QPixmap(32, 32)
     pm.fill(Qt.GlobalColor.transparent)
     p = QPainter(pm)
@@ -398,6 +407,7 @@ def main() -> None:
     app.setQuitOnLastWindowClosed(False)
     app.setApplicationName("GMP — Glass Media Player")
     app.setApplicationVersion(VERSION)
+    app.setWindowIcon(_make_icon())
     app.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )

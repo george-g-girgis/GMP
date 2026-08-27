@@ -11,7 +11,7 @@ import shutil
 import logging
 
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QFontDatabase
+from PyQt6.QtGui import QColor, QFont, QFontDatabase, QIcon
 from PyQt6.QtWidgets import (
     QCheckBox,
     QColorDialog,
@@ -221,6 +221,10 @@ class SettingsWindow(QDialog):
         super().__init__(parent)
         self._cfg = cfg
         self.setWindowTitle("GMP Settings")
+        from pathlib import Path
+        ico_file = Path(__file__).resolve().parent.parent / "assets" / "app.ico"
+        if ico_file.exists():
+            self.setWindowIcon(QIcon(str(ico_file)))
         self.setFixedSize(560, 500)
         self.setWindowFlags(
             Qt.WindowType.Dialog

@@ -19,15 +19,16 @@ from core.config import ConfigManager, VERSION
 
 from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QRect, QThread, QObject, pyqtSignal, QTimer
 from PyQt6.QtGui import (
+    QBrush,
     QColor,
     QFont,
     QFontDatabase,
+    QIcon,
     QLinearGradient,
     QPainter,
     QPainterPath,
     QPen,
     QPixmap,
-    QBrush,
 )
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -193,10 +194,26 @@ class _WelcomeArt(QWidget):
                 16 + i, 16 + i,
             )
 
-        # Music note
-        p.setPen(QPen(QColor(138, 92, 246)))
-        p.setFont(QFont("Segoe UI Emoji", 28))
-        p.drawText(card, Qt.AlignmentFlag.AlignCenter, "♫")
+        # Application icon or music note
+        ico_file = Path(__file__).resolve().parent.parent / "assets" / "icon.png"
+        if not ico_file.exists():
+            ico_file = Path(__file__).resolve().parent.parent / "assets" / "app.ico"
+
+        if ico_file.exists():
+            pix = QPixmap(str(ico_file)).scaled(
+                card.width() - 20, card.height() - 20,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            p.drawPixmap(
+                card.x() + (card.width() - pix.width()) // 2,
+                card.y() + (card.height() - pix.height()) // 2,
+                pix,
+            )
+        else:
+            p.setPen(QPen(QColor(138, 92, 246)))
+            p.setFont(QFont("Segoe UI Emoji", 28))
+            p.drawText(card, Qt.AlignmentFlag.AlignCenter, "♫")
 
         p.end()
 
@@ -271,6 +288,9 @@ class SetupWizard(QDialog):
         self._model_ready = False
         self._download_thread: QThread | None = None
         self.setWindowTitle("GMP — Setup")
+        ico_file = Path(__file__).resolve().parent.parent / "assets" / "app.ico"
+        if ico_file.exists():
+            self.setWindowIcon(QIcon(str(ico_file)))
         self.setFixedSize(520, 500)
         self.setWindowFlags(
             Qt.WindowType.Dialog | Qt.WindowType.WindowCloseButtonHint
