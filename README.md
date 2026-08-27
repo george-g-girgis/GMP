@@ -32,7 +32,7 @@
 | ⚙️ **Customizable** | Every visual setting is adjustable: opacity, glow, colors, size, position, and more |
 | 🔄 **Universal Media** | Works with **any** media source — Spotify, YouTube, VLC, Apple Music, browser players |
 | 📌 **Persistent Layout** | Remembers your position, size, colors, and all settings between sessions |
-| 🚀 **Startup Mode** | Optional auto-launch at Windows login with silent tray mode |
+| 🚀 **Startup & Start Menu** | Windows Start Menu integration, autostart at login, and Control Panel uninstaller |
 
 ---
 
@@ -87,9 +87,10 @@ On first run, a **Setup Wizard** will guide you through initial configuration:
 
 1. **Welcome** — Overview of GMP
 2. **Customize** — Set card opacity, glow intensity, depth effect, and AI model
-3. **Startup** — Choose whether to auto-start with Windows
+3. **AI Model Download** — Pre-downloads the neural model with a live progress indicator
+4. **Startup & Integration** — Configures Start Menu entry, Windows Apps registration, and login autostart
 
-After setup, GMP runs silently from the **system tray** ♫.
+After setup, GMP is available in your **Windows Start Menu** and runs silently from the **system tray** ♫.
 
 ---
 
@@ -110,11 +111,14 @@ Double-click the tray icon to open Settings.
 - **Drag** the card anywhere on your desktop
 - **Resize** using the grip handle in the bottom-right corner
 - **Right-click** the player card to open Settings
+- **Seek** smoothly by clicking or dragging along the progress bar
 - **Lock layout** in Settings to prevent accidental moves
 
-### Keyboard-Free Controls
+### Uninstallation
 
-All playback controls are on the widget: ◁ ▷ ▷▷ ⟲ 🔀 — or use your keyboard media keys as usual.
+GMP fully integrates into Windows:
+- Open **Windows Settings > Apps > Installed apps** (or classic **Control Panel > Programs and Features**)
+- Find **GMP — Glass Media Player** and click **Uninstall**
 
 ---
 
@@ -138,8 +142,10 @@ Access settings via **right-click on the player** or the **system tray menu**.
 ```
 GMP/
 ├── main.py              # Entry point & App controller
+├── uninstall.py         # Control Panel uninstaller entry point
 ├── core/
 │   ├── config.py        # Centralized settings (JSON, signals)
+│   ├── installer.py     # Start Menu shortcut & Control Panel integration
 │   ├── media.py         # WinRT GSMTC media bridge (async)
 │   ├── lyrics.py        # LrcLib synced lyrics fetcher
 │   ├── segmenter.py     # AI foreground extraction (rembg/U²-Net)
@@ -149,7 +155,10 @@ GMP/
 │   ├── overlay.py       # Desktop-embedded composite window
 │   ├── widget.py        # Glassmorphic player card
 │   ├── settings.py      # Tabbed settings dialog
-│   └── setup.py         # First-run wizard
+│   └── setup.py         # First-run wizard (with model download & system setup)
+├── assets/
+│   ├── hero.jpg         # Hero banner
+│   └── app.ico          # Windows application icon
 ├── requirements.txt
 ├── Launch GMP.vbs       # Silent launcher (no console)
 └── .gitignore
@@ -158,6 +167,7 @@ GMP/
 ### Key Design Decisions
 
 - **WinRT over Spotipy**: Uses Windows' native Global System Media Transport Controls — works with *any* media source, no API keys needed
+- **Smooth Reactive Controls**: Zero-latency optimistic UI updates for play/pause and shuffle, smooth hover animations, and real-time scrub tracking
 - **Debounced Config**: All settings changes coalesce into a single disk write every 500ms
 - **Thread Safety**: Media polling, lyrics fetching, and AI segmentation each run in dedicated `QThread`s — zero UI blocking
 - **Signal-Driven**: All modules communicate via `pyqtSignal` — no polling, no tight coupling

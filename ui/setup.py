@@ -619,9 +619,16 @@ class SetupWizard(QDialog):
         return row
 
     def _finish(self) -> None:
-        """Complete setup: save config, enable autostart if selected, close."""
+        """Complete setup: save config, install system entries, enable autostart if selected, close."""
         self._cfg["first_run"] = False
         self._cfg.save_now()
+
+        # Install Start Menu shortcut and Windows Control Panel registration
+        try:
+            from core.installer import install_system_entries
+            install_system_entries()
+        except Exception as exc:
+            log.warning("Could not register system entries: %s", exc)
 
         if self._cfg["autostart"]:
             from core.autostart import enable

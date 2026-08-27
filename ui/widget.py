@@ -9,7 +9,16 @@ centralised ConfigManager and reacts to live changes.
 from __future__ import annotations
 
 import bisect
-from PyQt6.QtCore import QPoint, QRectF, Qt, pyqtSignal, QLineF
+from PyQt6.QtCore import (
+    QEasingCurve,
+    QLineF,
+    QPoint,
+    QRectF,
+    QTimer,
+    QVariantAnimation,
+    Qt,
+    pyqtSignal,
+)
 from PyQt6.QtGui import (
     QBrush,
     QColor,
@@ -124,30 +133,78 @@ class _ResizeHandle(QLabel):
 #  Jump Slider
 # ─────────────────────────────────────────────────────────────────────
 class _JumpSlider(QSlider):
+    """A smooth seek slider with drag tracking and real-time scrub events."""
+
+    scrubbing_started = pyqtSignal(float)
+    scrubbing_moved = pyqtSignal(float)
+    scrubbing_finished = pyqtSignal(float)
+
+    def __init__(self, orientation=Qt.Orientation.Horizontal, parent=None):
+        super().__init__(orientation, parent)
+        self._dragging = False
+
+    def _pos_to_pct(self, pos_x: float) -> float:
+        w = max(1, self.width())
+        return max(0.0, min(1.0, float(pos_x) / float(w)))
+
     def mousePressEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
-            val = self.minimum() + ((self.maximum() - self.minimum()) * e.pos().x()) / self.width()
-            self.setValue(int(val))
-            self.sliderMoved.emit(self.value())
-        super().mousePressEvent(e)
+            self._dragging = True
+            pct = self._pos_to_pct(e.position().x())
+            self.setValue(int(pct * 1000))
+            self.scrubbing_started.emit(pct)
+            self.scrubbing_moved.emit(pct)
+            e.accept()
+        else:
+            super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e):
+        if self._dragging:
+            pct = self._pos_to_pct(e.position().x())
+            self.setValue(int(pct * 1000))
+            self.scrubbing_moved.emit(pct)
+            e.accept()
+        else:
+            super().mouseMoveEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        if self._dragging and e.button() == Qt.MouseButton.LeftButton:
+            self._dragging = False
+            pct = self._pos_to_pct(e.position().x())
+            self.setValue(int(pct * 1000))
+            self.scrubbing_finished.emit(pct)
+            e.accept()
+        else:
+            super().mouseReleaseEvent(e)
+
 
 # ─────────────────────────────────────────────────────────────────────
 #  Icon Button
 # ─────────────────────────────────────────────────────────────────────
 class _IconButton(QPushButton):
-    """A button that draws a Segoe Fluent icon."""
+    """A button with smooth hover animation and tactile press feedback."""
 
     def __init__(self, icon: str, sz: int = 34, font_sz: int = 14, parent=None) -> None:
         super().__init__(parent)
         self._icon = icon
         self._sz = sz
         self._font_sz = font_sz
-        self._hovered = False
         self._active = False
-        
+        self._pressed = False
+        self._hover_alpha = 0.0
+
+        self._anim = QVariantAnimation(self)
+        self._anim.setDuration(140)
+        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._anim.valueChanged.connect(self._on_anim_val)
+
         self.setFixedSize(sz, sz)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setStyleSheet("background:transparent;border:none;")
+
+    def _on_anim_val(self, val: object) -> None:
+        self._hover_alpha = float(val)
+        self.update()
 
     def set_icon_text(self, txt: str) -> None:
         if self._icon != txt:
@@ -160,29 +217,68 @@ class _IconButton(QPushButton):
             self.update()
 
     def enterEvent(self, e):
-        self._hovered = True
-        self.update()
+        super().enterEvent(e)
+        self._anim.stop()
+        self._anim.setStartValue(self._hover_alpha)
+        self._anim.setEndValue(1.0)
+        self._anim.start()
 
     def leaveEvent(self, e):
-        self._hovered = False
-        self.update()
+        super().leaveEvent(e)
+        self._pressed = False
+        self._anim.stop()
+        self._anim.setStartValue(self._hover_alpha)
+        self._anim.setEndValue(0.0)
+        self._anim.start()
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self._pressed = True
+            self.update()
+        super().mousePressEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        if self._pressed:
+            self._pressed = False
+            self.update()
+        super().mouseReleaseEvent(e)
 
     def paintEvent(self, e):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        
+
+        r = self.rect()
+        rad = max(4.0, self._sz / 3.2)
+
+        if self._pressed:
+            p.setBrush(QBrush(QColor(255, 255, 255, 45)))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawRoundedRect(QRectF(r).adjusted(1.0, 1.0, -1.0, -1.0), rad, rad)
+        elif self._active:
+            p.setBrush(QBrush(QColor(138, 92, 246, 60)))
+            p.setPen(QPen(QColor(138, 92, 246, 120), 1.2))
+            p.drawRoundedRect(QRectF(r).adjusted(0.5, 0.5, -0.5, -0.5), rad, rad)
+        elif self._hover_alpha > 0.0:
+            bg_alpha = int(25 * self._hover_alpha)
+            p.setBrush(QBrush(QColor(255, 255, 255, bg_alpha)))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawRoundedRect(QRectF(r), rad, rad)
+
         if self._active:
-            p.setBrush(QBrush(QColor(255, 255, 255, 30)))
-            p.setPen(Qt.PenStyle.NoPen)
-            p.drawRoundedRect(self.rect(), 4, 4)
-        elif self._hovered:
-            p.setBrush(QBrush(QColor(255, 255, 255, 15)))
-            p.setPen(Qt.PenStyle.NoPen)
-            p.drawRoundedRect(self.rect(), 4, 4)
-            
-        p.setPen(QPen(_ACCENT if self._active else _TEXT))
+            p.setPen(_ACCENT)
+        elif self._pressed:
+            p.setPen(QColor(255, 255, 255))
+        elif self._hover_alpha > 0.0:
+            tr = int(_TEXT.red() + (255 - _TEXT.red()) * self._hover_alpha)
+            tg = int(_TEXT.green() + (255 - _TEXT.green()) * self._hover_alpha)
+            tb = int(_TEXT.blue() + (255 - _TEXT.blue()) * self._hover_alpha)
+            p.setPen(QColor(tr, tg, tb))
+        else:
+            p.setPen(_TEXT)
+
+        draw_rect = r.adjusted(0, 1, 0, 1) if self._pressed else r
         p.setFont(QFont("Segoe Fluent Icons", self._font_sz))
-        p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self._icon)
+        p.drawText(draw_rect, Qt.AlignmentFlag.AlignCenter, self._icon)
         p.end()
 
 
@@ -215,6 +311,13 @@ class PlayerWidget(QWidget):
         self._raw_art: QPixmap | None = None  # original unscaled album art
         self._lyrics: list[tuple[float, str]] = []
         self._lyrics_times: list[float] = []
+        self._is_scrubbing = False
+        self._total_duration = 0.0
+        self._current_duration = 0.0
+
+        self._seek_cooldown = QTimer(self)
+        self._seek_cooldown.setSingleShot(True)
+        self._seek_cooldown.setInterval(400)
 
         self._build()
         self._apply_cfg()
@@ -328,7 +431,9 @@ class PlayerWidget(QWidget):
         self._slider.setFixedHeight(16)
         self._slider.setCursor(Qt.CursorShape.PointingHandCursor)
         self._apply_slider_style()
-        self._slider.sliderMoved.connect(self._on_seek)
+        self._slider.scrubbing_started.connect(self._on_scrub_start)
+        self._slider.scrubbing_moved.connect(self._on_scrub_move)
+        self._slider.scrubbing_finished.connect(self._on_scrub_finish)
         
         self._time = QLabel("0:00 / 0:00")
         self._time.setFont(_font(10))
@@ -351,9 +456,9 @@ class PlayerWidget(QWidget):
         self._btn_repeat = _IconButton("\uE8EE", 24, 12, self)
 
         self._btn_next.clicked.connect(self.next_track.emit)
-        self._btn_play.clicked.connect(self.play_pause.emit)
+        self._btn_play.clicked.connect(self._on_play_clicked)
         self._btn_prev.clicked.connect(self.prev_track.emit)
-        self._btn_shuffle.clicked.connect(self.shuffle.emit)
+        self._btn_shuffle.clicked.connect(self._on_shuffle_clicked)
         self._btn_repeat.clicked.connect(self.repeat.emit)
 
         ctrl.addWidget(self._btn_shuffle)
@@ -554,36 +659,44 @@ class PlayerWidget(QWidget):
             self._playing = playing
             self._btn_play.set_icon_text(_ICON_PAUSE if playing else _ICON_PLAY)
 
-    def set_position(self, cur: float, total: float) -> None:
-        if total > 0:
-            self._slider.blockSignals(True)
-            self._slider.setValue(int((cur / total) * 1000))
-            self._slider.blockSignals(False)
-            self._time.setText(f"{_time(cur)} / {_time(total)}")
+    def _on_play_clicked(self) -> None:
+        """Optimistic instant feedback when play/pause is clicked."""
+        self.set_playing(not self._playing)
+        self.play_pause.emit()
+
+    def _on_shuffle_clicked(self) -> None:
+        """Optimistic instant feedback when shuffle is clicked."""
+        self._btn_shuffle.set_active(not self._btn_shuffle._active)
+        self.shuffle.emit()
+
+    def _on_scrub_start(self, pct: float) -> None:
+        self._is_scrubbing = True
+        if self._total_duration > 0:
+            cur = pct * self._total_duration
+            self._time.setText(f"{_time(cur)} / {_time(self._total_duration)}")
             self._sync_lyrics(cur)
 
-    def set_lyrics(self, lyrics: list[tuple[float, str]]) -> None:
-        self._lyrics = lyrics
-        self._lyrics_times = [t for t, _ in lyrics] if lyrics else []
-        lyrics_enabled = self._cfg.get("lyrics_enabled", True)
-        if lyrics and lyrics_enabled:
-            self._lyrics_lbl.show()
-            self._lyrics_lbl.setText("Lyrics synced!")
-        elif not lyrics_enabled:
-            self._lyrics_lbl.hide()
-        else:
-            self._lyrics_lbl.show()
-            self._lyrics_lbl.setText("No synced lyrics found.")
+    def _on_scrub_move(self, pct: float) -> None:
+        if self._total_duration > 0:
+            cur = pct * self._total_duration
+            self._time.setText(f"{_time(cur)} / {_time(self._total_duration)}")
+            self._sync_lyrics(cur)
 
-    def _sync_lyrics(self, cur: float) -> None:
-        if not self._lyrics or not self._lyrics_on:
-            return
-        idx = bisect.bisect_right(self._lyrics_times, cur) - 1
-        if idx >= 0:
-            self._lyrics_lbl.setText(self._lyrics[idx][1])
+    def _on_scrub_finish(self, pct: float) -> None:
+        self._is_scrubbing = False
+        self._seek_cooldown.start()
+        self.seek.emit(pct)
 
-    def _on_seek(self, val: int) -> None:
-        self.seek.emit(val / 1000.0)
+    def set_position(self, cur: float, total: float) -> None:
+        self._current_duration = cur
+        self._total_duration = total
+        if total > 0:
+            if not self._is_scrubbing and not self._seek_cooldown.isActive():
+                self._slider.blockSignals(True)
+                self._slider.setValue(int((cur / total) * 1000))
+                self._slider.blockSignals(False)
+                self._time.setText(f"{_time(cur)} / {_time(total)}")
+                self._sync_lyrics(cur)
 
     # ── painting ─────────────────────────────────────────────────────
     def paintEvent(self, e):
