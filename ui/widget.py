@@ -698,6 +698,26 @@ class PlayerWidget(QWidget):
                 self._time.setText(f"{_time(cur)} / {_time(total)}")
                 self._sync_lyrics(cur)
 
+    def set_lyrics(self, lyrics: list[tuple[float, str]]) -> None:
+        self._lyrics = lyrics
+        self._lyrics_times = [t for t, _ in lyrics] if lyrics else []
+        lyrics_enabled = self._cfg.get("lyrics_enabled", True)
+        if lyrics and lyrics_enabled:
+            self._lyrics_lbl.show()
+            self._lyrics_lbl.setText("Lyrics synced!")
+        elif not lyrics_enabled:
+            self._lyrics_lbl.hide()
+        else:
+            self._lyrics_lbl.show()
+            self._lyrics_lbl.setText("No synced lyrics found.")
+
+    def _sync_lyrics(self, cur: float) -> None:
+        if not self._lyrics or not getattr(self, "_lyrics_on", True):
+            return
+        idx = bisect.bisect_right(self._lyrics_times, cur) - 1
+        if idx >= 0:
+            self._lyrics_lbl.setText(self._lyrics[idx][1])
+
     # ── painting ─────────────────────────────────────────────────────
     def paintEvent(self, e):
         p = QPainter(self)

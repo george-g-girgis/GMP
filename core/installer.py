@@ -40,12 +40,17 @@ def create_start_menu_shortcut() -> bool:
     """Create or update the Windows Start Menu shortcut."""
     root = get_project_root()
     shortcut_path = get_start_menu_shortcut_path()
-    vbs_path = root / "Launch GMP.vbs"
     ico_path = root / "assets" / "app.ico"
 
-    target = str(vbs_path) if vbs_path.exists() else str(root / ".venv" / "Scripts" / "pythonw.exe")
-    args = "" if vbs_path.exists() else f'"{root / "main.py"}"'
-    icon = str(ico_path) if ico_path.exists() else target
+    if getattr(sys, "frozen", False):
+        target = str(sys.executable)
+        args = ""
+        icon = target
+    else:
+        vbs_path = root / "Launch GMP.vbs"
+        target = str(vbs_path) if vbs_path.exists() else str(root / ".venv" / "Scripts" / "pythonw.exe")
+        args = "" if vbs_path.exists() else f'"{root / "main.py"}"'
+        icon = str(ico_path) if ico_path.exists() else target
 
     try:
         # Create via Windows Script Host (WScript.Shell COM)
@@ -102,13 +107,19 @@ def register_uninstall_entry() -> bool:
     """
     root = get_project_root()
     ico_path = root / "assets" / "app.ico"
-    uninstall_py = root / "uninstall.py"
-    pythonw = root / ".venv" / "Scripts" / "pythonw.exe"
-    if not pythonw.exists():
-        pythonw = Path(sys.executable)
 
-    uninstall_cmd = f'"{pythonw}" "{uninstall_py}"'
-    quiet_uninstall_cmd = f'"{pythonw}" "{uninstall_py}" --silent'
+    if getattr(sys, "frozen", False):
+        display_icon = str(sys.executable)
+        uninstall_cmd = f'"{sys.executable}" --uninstall'
+        quiet_uninstall_cmd = f'"{sys.executable}" --uninstall --silent'
+    else:
+        uninstall_py = root / "uninstall.py"
+        pythonw = root / ".venv" / "Scripts" / "pythonw.exe"
+        if not pythonw.exists():
+            pythonw = Path(sys.executable)
+        display_icon = str(ico_path) if ico_path.exists() else str(pythonw)
+        uninstall_cmd = f'"{pythonw}" "{uninstall_py}"'
+        quiet_uninstall_cmd = f'"{pythonw}" "{uninstall_py}" --silent'
 
     try:
         key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, _UNINSTALL_REG_KEY)

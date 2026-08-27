@@ -389,7 +389,10 @@ def main() -> None:
             return
         logging.error("Uncaught exception", exc_info=(exc_type, exc_value, exc_traceback))
 
-    sys.excepthook = handle_exception
+    if "--uninstall" in sys.argv:
+        from uninstall import main as uninstall_main
+        uninstall_main()
+        sys.exit(0)
 
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)

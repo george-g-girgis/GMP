@@ -23,7 +23,9 @@ _VALUE_NAME = "GMP"
 
 
 def _vbs_path() -> str:
-    """Resolve the absolute path to the VBS launcher."""
+    """Resolve the executable command for login autostart."""
+    if getattr(sys, "frozen", False):
+        return f'"{sys.executable}"'
     base = Path(sys.argv[0]).resolve().parent
     vbs = base / "Launch GMP.vbs"
     if vbs.exists():
