@@ -101,19 +101,12 @@ class OverlayWindow(QWidget):
         self._wp_px: QPixmap | None = None     # full wallpaper
         self._fg_px: QPixmap | None = None     # foreground mask
 
-        # detect the virtual desktop that spans ALL connected screens
-        screens = QGuiApplication.screens()
-        if screens:
-            combined = screens[0].geometry()
-            for scr in screens[1:]:
-                combined = combined.united(scr.geometry())
-            self._scr = QSize(combined.width(), combined.height())
-            self._scr_rect = combined
-        else:
-            self._scr = QSize(1920, 1080)
-            self._scr_rect = QRect(0, 0, 1920, 1080)
-        log.info("Virtual desktop: %dx%d across %d screen(s)",
-                 self._scr.width(), self._scr.height(), len(screens))
+        # Target primary monitor for pixel-perfect 1:1 depth mask and wallpaper alignment
+        scr = QGuiApplication.primaryScreen()
+        geo = scr.geometry() if scr else QRect(0, 0, 1920, 1080)
+        self._scr = QSize(geo.width(), geo.height())
+        self._scr_rect = QRect(0, 0, geo.width(), geo.height())
+        log.info("Primary screen overlay: %dx%d", self._scr.width(), self._scr.height())
 
         self._blur_timer = QElapsedTimer()
         self._blur_timer.start()
@@ -232,9 +225,8 @@ class OverlayWindow(QWidget):
 
     def _on_player_dragged(self, dx: int, dy: int) -> None:
         """Handle continuous dragging from the PlayerWidget."""
-        r = self._scr_rect
-        x = max(r.left(), min(self._player.x() + dx, r.right() - self._player.width()))
-        y = max(r.top(), min(self._player.y() + dy, r.bottom() - self._player.height()))
+        x = max(0, min(self._player.x() + dx, self._scr.width() - self._player.width()))
+        y = max(0, min(self._player.y() + dy, self._scr.height() - self._player.height()))
         self._player.move(x, y)
         self._refresh_mask()
         # Throttle blur during drag — only recalc every _blur_throttle_ms
