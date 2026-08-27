@@ -125,7 +125,7 @@ def register_uninstall_entry() -> bool:
         key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, _UNINSTALL_REG_KEY)
         winreg.SetValueEx(key, "DisplayName", 0, winreg.REG_SZ, "GMP — Glass Media Player")
         winreg.SetValueEx(key, "DisplayVersion", 0, winreg.REG_SZ, VERSION)
-        winreg.SetValueEx(key, "Publisher", 0, winreg.REG_SZ, "George Girgis")
+        winreg.SetValueEx(key, "Publisher", 0, winreg.REG_SZ, "GGG")
         winreg.SetValueEx(key, "DisplayIcon", 0, winreg.REG_SZ, str(ico_path) if ico_path.exists() else str(pythonw))
         winreg.SetValueEx(key, "InstallLocation", 0, winreg.REG_SZ, str(root))
         winreg.SetValueEx(key, "UninstallString", 0, winreg.REG_SZ, uninstall_cmd)

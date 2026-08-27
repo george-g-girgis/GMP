@@ -232,5 +232,5 @@ Contributions are welcome! Feel free to:
 ---
 
 <p align="center">
-  Built with 💜 by <a href="https://github.com/george-g-girgis">George Girgis</a>
+  Built with 💜 by <a href="https://github.com/george-g-girgis">GGG</a>
 </p>
