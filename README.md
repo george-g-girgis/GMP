@@ -52,16 +52,29 @@ The player embeds into the Windows **WorkerW** desktop layer using the Progman `
 
 ---
 
-## 🚀 Quick Start
+## 🚀 Download & Quick Start
 
-### Prerequisites
+### ⚡ Option 1: Standalone Download (Recommended for End Users)
+
+No Python or Git required!
+
+1. Download **[GMP-v1.1.0-Windows-x64.zip](https://github.com/george-g-girgis/GMP/releases/latest/download/GMP-v1.1.0-Windows-x64.zip)** from the [Releases page](https://github.com/george-g-girgis/GMP/releases/latest).
+2. Extract the folder anywhere on your PC.
+3. Run `GMP.exe`.
+4. Follow the setup wizard — GMP will automatically add itself to your **Windows Start Menu**, **System Tray**, and **Control Panel Installed Apps**!
+
+---
+
+### 💻 Option 2: Run from Source (Developers)
+
+#### Prerequisites
 
 - **Windows 11** (Windows 10 may work with limited features)
 - **Python 3.11+** → [Download](https://www.python.org/downloads/)
 - **Git** → [Download](https://git-scm.com/downloads)
 - A media player running (Spotify, YouTube, VLC, etc.)
 
-### Installation
+#### Installation
 
 ```bash
 # 1. Clone the repository
