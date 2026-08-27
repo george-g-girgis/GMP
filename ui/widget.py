@@ -212,6 +212,7 @@ class PlayerWidget(QWidget):
         self._blur_bg: QPixmap | None = None
         self._glow_cache: QPixmap | None = None
         self._drag_pos: QPoint | None = None
+        self._raw_art: QPixmap | None = None  # original unscaled album art
         self._lyrics: list[tuple[float, str]] = []
         self._lyrics_times: list[float] = []
 
@@ -401,29 +402,36 @@ class PlayerWidget(QWidget):
         """)
 
     def _draw_default_art(self) -> None:
-        px = QPixmap(68, 68)
+        sz = self._art.size()
+        side = max(sz.width(), sz.height(), 1)
+        px = QPixmap(side, side)
         px.fill(Qt.GlobalColor.transparent)
         p = QPainter(px)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setPen(QPen(_TEXT_DIM))
-        p.setFont(QFont("Segoe Fluent Icons", 24))
+        font_sz = max(12, side // 3)
+        p.setFont(QFont("Segoe Fluent Icons", font_sz))
         p.drawText(px.rect(), Qt.AlignmentFlag.AlignCenter, "\uE8D6")
         p.end()
         self._art.setPixmap(px)
 
     def _set_art(self, px: QPixmap) -> None:
         """Scale album art to fit the square container (no cropping)."""
+        self._raw_art = px  # cache for re-apply on resize
+        self._apply_art_to_label(px)
+
+    def _apply_art_to_label(self, px: QPixmap) -> None:
+        """Render a pixmap into the art label at the label's current size."""
         sz = self._art.size()
-        # Create a transparent square canvas
+        if sz.width() < 1 or sz.height() < 1:
+            return
         canvas = QPixmap(sz)
         canvas.fill(Qt.GlobalColor.transparent)
-        # Scale the art to fit inside the square
         scaled = px.scaled(
             sz,
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
-        # Center the scaled art on the canvas
         p = QPainter(canvas)
         x = (sz.width() - scaled.width()) // 2
         y = (sz.height() - scaled.height()) // 2
@@ -471,7 +479,14 @@ class PlayerWidget(QWidget):
         self._time.setFont(_font(int(10 * s)))
         
         new_art_sz = int(68 * s)
+        old_art_sz = self._art.width()
         self._art.setFixedSize(new_art_sz, new_art_sz)
+        # Re-apply album art at new size
+        if new_art_sz != old_art_sz:
+            if self._raw_art and not self._raw_art.isNull():
+                self._apply_art_to_label(self._raw_art)
+            else:
+                self._draw_default_art()
         
         for btn, sz, fsz in [
             (self._btn_shuffle, 24, 12),
@@ -517,6 +532,7 @@ class PlayerWidget(QWidget):
         self._title.setText("No Media Playing")
         self._artist.setText("Play something to get started")
         self._album.setText("")
+        self._raw_art = None
         self._draw_default_art()
         self.set_playing(False)
         self.set_position(0.0, 0.0)
@@ -526,6 +542,7 @@ class PlayerWidget(QWidget):
         self._title.setText("Spotify API Keys Missing")
         self._artist.setText("Check .env.template file")
         self._album.setText("")
+        self._raw_art = None
         self._draw_default_art()
         self.set_playing(False)
         self.set_position(0.0, 0.0)

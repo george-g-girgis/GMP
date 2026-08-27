@@ -1,14 +1,23 @@
 """
 ui/setup.py — First-run setup wizard for GMP.
 
-A dark-themed, 3-step stacked dialog that guides the user through
-initial configuration on first launch. Sets ``first_run`` to False
-when complete so it never appears again.
+A dark-themed, 4-step stacked dialog that guides the user through
+initial configuration on first launch. Includes an AI model download
+step with progress feedback. Sets ``first_run`` to False when complete
+so it never appears again.
 """
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QRect
+import sys
+from pathlib import Path
+
+# Add project root (GMP) to sys.path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from core.config import ConfigManager, VERSION
+
+from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QRect, QThread, QObject, pyqtSignal, QTimer
 from PyQt6.QtGui import (
     QColor,
     QFont,
@@ -26,14 +35,13 @@ from PyQt6.QtWidgets import (
     QDialog,
     QHBoxLayout,
     QLabel,
+    QProgressBar,
     QPushButton,
     QSlider,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
-
-from core.config import ConfigManager, VERSION
 
 # ── Palette (matches settings.py) ───────────────────────────────────
 _BG = "#0e0e1a"
@@ -222,16 +230,48 @@ def _accent_btn(text: str) -> QPushButton:
 
 
 # ─────────────────────────────────────────────────────────────────────
+#  Background model downloader
+# ─────────────────────────────────────────────────────────────────────
+class _ModelDownloadWorker(QObject):
+    """Downloads the rembg AI model in a background thread."""
+
+    status = pyqtSignal(str)
+    finished = pyqtSignal()
+    error = pyqtSignal(str)
+
+    def __init__(self, model_name: str = "u2net") -> None:
+        super().__init__()
+        self._model = model_name
+
+    def run(self) -> None:
+        try:
+            self.status.emit(f"Importing rembg…")
+            from rembg import new_session
+
+            self.status.emit(f"Downloading {self._model} model (~170 MB)…")
+            new_session(model_name=self._model)
+
+            self.status.emit("Model ready!")
+            self.finished.emit()
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+
+
+# ─────────────────────────────────────────────────────────────────────
 #  Setup Wizard
 # ─────────────────────────────────────────────────────────────────────
 class SetupWizard(QDialog):
-    """3-step first-run configuration wizard."""
+    """4-step first-run configuration wizard."""
 
     def __init__(self, cfg: ConfigManager, parent=None) -> None:
         super().__init__(parent)
         self._cfg = cfg
+        self._model_ready = False
+        self._download_thread: QThread | None = None
         self.setWindowTitle("GMP — Setup")
-        self.setFixedSize(520, 460)
+        self.setFixedSize(520, 500)
         self.setWindowFlags(
             Qt.WindowType.Dialog | Qt.WindowType.WindowCloseButtonHint
         )
@@ -245,6 +285,7 @@ class SetupWizard(QDialog):
         self._stack = QStackedWidget()
         self._stack.addWidget(self._page_welcome())
         self._stack.addWidget(self._page_customize())
+        self._stack.addWidget(self._page_model_download())
         self._stack.addWidget(self._page_startup())
         root.addWidget(self._stack, 1)
 
@@ -253,7 +294,7 @@ class SetupWizard(QDialog):
         bottom.setContentsMargins(24, 0, 24, 20)
         bottom.setSpacing(12)
 
-        self._dots = _StepDots(3)
+        self._dots = _StepDots(4)
         bottom.addWidget(self._dots, alignment=Qt.AlignmentFlag.AlignCenter)
 
         root.addLayout(bottom)
@@ -363,13 +404,132 @@ class SetupWizard(QDialog):
         nav.addWidget(back)
         nav.addStretch()
         nxt = _accent_btn("Next →")
-        nxt.clicked.connect(lambda: self._go(2))
+        nxt.clicked.connect(self._start_model_download)
         nav.addWidget(nxt)
         v.addLayout(nav)
 
         return w
 
-    # ── Page 3: Startup ──────────────────────────────────────────────
+    # ── Page 3: Model Download ───────────────────────────────────────
+
+    def _page_model_download(self) -> QWidget:
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.setContentsMargins(40, 40, 40, 20)
+        v.setSpacing(16)
+
+        v.addStretch()
+
+        self._dl_title = QLabel("Preparing AI Model…")
+        self._dl_title.setFont(_font(18, True))
+        self._dl_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        v.addWidget(self._dl_title)
+
+        self._dl_desc = QLabel(
+            "Downloading the AI segmentation model for the depth effect.\n"
+            "This only happens once (~170 MB). Please wait…"
+        )
+        self._dl_desc.setFont(_font(11))
+        self._dl_desc.setStyleSheet(f"color: {_DIM};")
+        self._dl_desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._dl_desc.setWordWrap(True)
+        v.addWidget(self._dl_desc)
+
+        v.addSpacing(16)
+
+        self._dl_progress = QProgressBar()
+        self._dl_progress.setRange(0, 0)  # indeterminate
+        self._dl_progress.setFixedHeight(8)
+        self._dl_progress.setTextVisible(False)
+        self._dl_progress.setStyleSheet(f"""
+            QProgressBar {{
+                background: rgba(255,255,255,0.08);
+                border: none;
+                border-radius: 4px;
+            }}
+            QProgressBar::chunk {{
+                background: {_ACCENT};
+                border-radius: 4px;
+            }}
+        """)
+        v.addWidget(self._dl_progress)
+
+        self._dl_status = QLabel("Initializing…")
+        self._dl_status.setFont(_font(10))
+        self._dl_status.setStyleSheet(f"color: {_DIM};")
+        self._dl_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        v.addWidget(self._dl_status)
+
+        v.addStretch()
+
+        # Hidden "Continue" button (shown when download finishes)
+        self._dl_continue = _accent_btn("Continue →")
+        self._dl_continue.clicked.connect(lambda: self._go(3))
+        self._dl_continue.hide()
+        v.addWidget(self._dl_continue, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        v.addStretch()
+        return w
+
+    def _start_model_download(self) -> None:
+        """Navigate to download page and start the model download."""
+        self._go(2)
+
+        if not self._cfg.get("depth_enabled", True):
+            # Depth disabled — skip download entirely
+            self._dl_title.setText("AI Model — Skipped")
+            self._dl_desc.setText("Depth effect is disabled. You can enable it later in Settings.")
+            self._dl_progress.hide()
+            self._dl_status.setText("Ready to continue!")
+            self._dl_continue.show()
+            self._model_ready = True
+            return
+
+        # Start background download
+        model_name = self._cfg.get("model", "u2net")
+        self._dl_status.setText(f"Loading {model_name} model…")
+
+        self._download_thread = QThread()
+        self._dl_worker = _ModelDownloadWorker(model_name)
+        self._dl_worker.moveToThread(self._download_thread)
+        self._download_thread.started.connect(self._dl_worker.run)
+        self._dl_worker.status.connect(self._on_dl_status)
+        self._dl_worker.finished.connect(self._on_dl_finished)
+        self._dl_worker.error.connect(self._on_dl_error)
+        self._download_thread.start()
+
+    def _on_dl_status(self, text: str) -> None:
+        self._dl_status.setText(text)
+
+    def _on_dl_finished(self) -> None:
+        self._model_ready = True
+        self._dl_title.setText("AI Model Ready ✓")
+        self._dl_desc.setText("The depth effect model is downloaded and ready to use.")
+        self._dl_progress.setRange(0, 100)
+        self._dl_progress.setValue(100)
+        self._dl_status.setText("Complete!")
+        self._dl_continue.show()
+        # Clean up thread
+        if self._download_thread:
+            self._download_thread.quit()
+            self._download_thread.wait(2000)
+
+    def _on_dl_error(self, msg: str) -> None:
+        self._model_ready = True  # allow continuing anyway
+        self._dl_title.setText("Download Issue")
+        self._dl_desc.setText(
+            f"The model couldn't be downloaded now: {msg[:100]}\n\n"
+            "You can still use GMP — the depth effect will download\n"
+            "the model automatically when first needed."
+        )
+        self._dl_progress.hide()
+        self._dl_status.setText("You can continue without the depth effect.")
+        self._dl_continue.show()
+        if self._download_thread:
+            self._download_thread.quit()
+            self._download_thread.wait(2000)
+
+    # ── Page 4: Startup ──────────────────────────────────────────────
 
     def _page_startup(self) -> QWidget:
         w = QWidget()
@@ -417,7 +577,7 @@ class SetupWizard(QDialog):
         back.setStyleSheet(f"QPushButton {{ background: transparent; color: {_DIM}; border: none; }}"
                            f"QPushButton:hover {{ color: {_TEXT}; }}")
         back.setCursor(Qt.CursorShape.PointingHandCursor)
-        back.clicked.connect(lambda: self._go(1))
+        back.clicked.connect(lambda: self._go(2))
         nav.addWidget(back)
         nav.addStretch()
         finish = _accent_btn("Finish Setup ✓")
