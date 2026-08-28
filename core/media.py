@@ -129,8 +129,12 @@ class _MediaWorker(QObject):
                     self._slow_task = asyncio.create_task(self._poll_slow())
                 self._slow_tick = 0
 
-            # Sleep
-            await asyncio.sleep(self._poll_ms / 1000.0)
+            # Dynamic adaptive sleep: poll fast when actively playing, slow down when idle
+            if self._last_playing:
+                sleep_s = self._poll_ms / 1000.0
+            else:
+                sleep_s = max(self._poll_ms * 4, 800) / 1000.0
+            await asyncio.sleep(sleep_s)
 
     async def _poll_fast(self) -> None:
         try:
@@ -417,12 +421,13 @@ class MediaController(QObject):
         # Trigger lyrics fetch
         title = info.get("title", "")
         artist = info.get("artist", "")
-        if getattr(self, '_last_fetched_title', None) != title:
-            self._last_fetched_title = title
+        track_key = (title, artist)
+        if getattr(self, "_last_fetched_key", None) != track_key:
+            self._last_fetched_key = track_key
             if title and artist and title != "Unknown":
                 self.lyrics_changed.emit([])  # Clear lyrics immediately
                 self._lyrics_fetcher.fetch(title, artist)
             else:
                 self.lyrics_changed.emit([])
-            
+
         self.track_changed.emit(info)

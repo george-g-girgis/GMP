@@ -42,6 +42,7 @@ class WallpaperWatcher(QObject):
         super().__init__(parent)
         self._interval = poll_interval_ms
         self._current: str | None = None  # last-seen path (None = never checked)
+        self._current_mtime: float | None = None
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
 
@@ -80,7 +81,15 @@ class WallpaperWatcher(QObject):
 
     def _tick(self) -> None:
         path = self.get_current_wallpaper() or ""
-        if path != self._current:
+        mtime = None
+        if path:
+            try:
+                mtime = Path(path).stat().st_mtime
+            except OSError:
+                pass
+
+        if path != self._current or (mtime is not None and mtime != self._current_mtime):
             self._current = path
+            self._current_mtime = mtime
             log.info("Wallpaper changed → %s", path or "(solid colour)")
             self.wallpaper_changed.emit(path)

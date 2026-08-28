@@ -80,12 +80,23 @@ def _font(size: int, bold: bool = False, family: str | None = None) -> QFont:
 
 
 class _ElidedLabel(QLabel):
+    def __init__(self, text: str = "", parent=None):
+        super().__init__(text, parent)
+        self._cached_txt = ""
+        self._cached_w = 0
+        self._cached_elided = ""
+
     def paintEvent(self, e):
         p = QPainter(self)
         p.setPen(self.palette().windowText().color())
-        metrics = QFontMetrics(self.font())
-        elided = metrics.elidedText(self.text(), Qt.TextElideMode.ElideRight, self.width())
-        p.drawText(self.rect(), self.alignment(), elided)
+        txt = self.text()
+        w = self.width()
+        if txt != self._cached_txt or w != self._cached_w:
+            self._cached_txt = txt
+            self._cached_w = w
+            metrics = QFontMetrics(self.font())
+            self._cached_elided = metrics.elidedText(txt, Qt.TextElideMode.ElideRight, w)
+        p.drawText(self.rect(), self.alignment(), self._cached_elided)
         p.end()
 
 
@@ -695,7 +706,9 @@ class PlayerWidget(QWidget):
                 self._slider.blockSignals(True)
                 self._slider.setValue(int((cur / total) * 1000))
                 self._slider.blockSignals(False)
-                self._time.setText(f"{_time(cur)} / {_time(total)}")
+                new_time = f"{_time(cur)} / {_time(total)}"
+                if self._time.text() != new_time:
+                    self._time.setText(new_time)
                 self._sync_lyrics(cur)
 
     def set_lyrics(self, lyrics: list[tuple[float, str]]) -> None:
@@ -716,7 +729,9 @@ class PlayerWidget(QWidget):
             return
         idx = bisect.bisect_right(self._lyrics_times, cur) - 1
         if idx >= 0:
-            self._lyrics_lbl.setText(self._lyrics[idx][1])
+            line_text = self._lyrics[idx][1]
+            if self._lyrics_lbl.text() != line_text:
+                self._lyrics_lbl.setText(line_text)
 
     # ── painting ─────────────────────────────────────────────────────
     def paintEvent(self, e):
