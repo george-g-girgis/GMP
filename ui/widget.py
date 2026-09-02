@@ -804,7 +804,6 @@ class PlayerWidget(QWidget):
         self.set_playing(False)
         self.set_position(0.0, 0.0)
         self.set_lyrics([])
-        self._disable_video_mode()
         
     def set_auth_failed(self) -> None:
         self._title.setText("Spotify API Keys Missing")
@@ -815,7 +814,6 @@ class PlayerWidget(QWidget):
         self.set_playing(False)
         self.set_position(0.0, 0.0)
         self.set_lyrics([])
-        self._disable_video_mode()
 
     def set_playing(self, playing: bool) -> None:
         playing = bool(playing)

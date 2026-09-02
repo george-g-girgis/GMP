@@ -20,7 +20,7 @@ import sys
 from collections import Counter
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPixmap
+from PyQt6.QtGui import QAction, QColor, QFont, QGuiApplication, QIcon, QPainter, QPixmap
 from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from core.config import ConfigManager, VERSION
@@ -89,12 +89,21 @@ QMenu::separator {
 #  Application controller
 # ─────────────────────────────────────────────────────────────────────
 class App:
-    """Wires modules together and manages the tray lifecycle."""
+    """Wires modules together, orchestrates multi-screen & floating overlays, and manages tray lifecycle."""
 
     def __init__(self, cfg: ConfigManager) -> None:
         self._cfg = cfg
         self._wp_path: str | None = None
+        self._current_mask: QPixmap | None = None
         self._settings_win = None
+        self._always_on_top_action: QAction | None = None
+
+        # Cached media state for new/rebuilt overlays
+        self._last_track: dict | None = None
+        self._last_lyrics: list = []
+        self._last_caption: tuple[str, str] | None = None
+        self._last_playing: bool = False
+        self._last_pos: tuple[float, float] = (0.0, 0.0)
 
         # ── core modules ──
         self._watcher = WallpaperWatcher(
@@ -106,49 +115,56 @@ class App:
         )
         self._media = MediaController(poll_ms=self._cfg["poll_ms"], cfg=self._cfg)
 
-        # ── UI ──
-        self._overlay = OverlayWindow(self._cfg)
+        # ── UI Overlays ──
+        self._desktop_overlays: dict[str, OverlayWindow] = {}
+        self._floating_overlay: OverlayWindow | None = None
 
-        self._wire()
+        self._wire_core()
         self._tray = self._build_tray()
 
         # React to live config changes
         self._cfg.changed.connect(self._on_cfg_changed)
 
+        # Listen for screen hardware connect/disconnect
+        app_inst = QApplication.instance()
+        if app_inst:
+            app_inst.screenAdded.connect(self._on_screens_hardware_changed)
+            app_inst.screenRemoved.connect(self._on_screens_hardware_changed)
+
     # ── live config changes ──────────────────────────────────────────
 
     def _on_cfg_changed(self, key: str, value) -> None:
-        if key == "model":
+        if key == "always_on_top":
+            self._sync_overlays()
+        elif key == "enabled_screens":
+            if not self._cfg.get("always_on_top", False):
+                self._sync_overlays()
+        elif key == "model":
             self._segmenter.model = value
         elif key == "depth_enabled":
             self._handle_depth_toggle(value)
         elif key == "player_w" or key == "player_h":
-            # widget listens directly; just persist
             self._cfg.save()
 
-    # ── signal wiring ────────────────────────────────────────────────
+    def _on_screens_hardware_changed(self, _screen) -> None:
+        log.info("Display hardware configuration changed")
+        self._sync_overlays()
 
-    def _wire(self) -> None:
-        p = self._overlay.player
+    # ── overlay lifecycle & multi-screen management ─────────────────
 
-        # wallpaper → segmenter pipeline
-        self._watcher.wallpaper_changed.connect(self._on_wp)
+    def _create_overlay(self, target_screen=None, is_floating: bool = False) -> OverlayWindow:
+        ov = OverlayWindow(self._cfg, target_screen=target_screen, is_floating=is_floating)
+        p = ov.player
 
-        # segmenter → overlay
-        self._segmenter.ready.connect(self._on_mask_ready)
-        self._segmenter.error.connect(self._on_mask_error)
-        self._segmenter.progress.connect(self._on_seg_progress)
-
-        # media → player
-        self._media.track_changed.connect(p.set_track)
-        self._media.lyrics_changed.connect(p.set_lyrics)
-        self._media.caption_ready.connect(p.set_caption)
-        self._media.playback_changed.connect(p.set_playing)
-        self._media.position_changed.connect(p.set_position)
-        self._media.session_lost.connect(p.set_idle)
-        self._media.auth_failed.connect(p.set_auth_failed)
-        self._media.shuffle_changed.connect(p.set_shuffle)
-        self._media.repeat_changed.connect(p.set_repeat)
+        # Prime initial state
+        if self._last_track:
+            p.set_track(self._last_track)
+        if self._last_lyrics:
+            p.set_lyrics(self._last_lyrics)
+        if self._last_caption:
+            p.set_caption(self._last_caption[0], self._last_caption[1])
+        p.set_playing(self._last_playing)
+        p.set_position(self._last_pos[0], self._last_pos[1])
 
         # player → media
         p.play_pause.connect(self._media.play_pause)
@@ -162,7 +178,137 @@ class App:
         p.open_settings.connect(self._open_settings)
 
         # overlay position save
-        self._overlay.player_moved.connect(self._on_player_moved)
+        ov.player_moved.connect(self._on_player_moved)
+
+        return ov
+
+    def _active_overlays(self) -> list[OverlayWindow]:
+        if self._cfg.get("always_on_top", False):
+            return [self._floating_overlay] if self._floating_overlay else []
+        return list(self._desktop_overlays.values())
+
+    def _sync_overlays(self) -> None:
+        """Synchronize active overlay windows based on always_on_top and enabled_screens."""
+        is_top = self._cfg.get("always_on_top", False)
+
+        if is_top:
+            # ── Always on Top Floating Mode ──
+            # Hide all desktop overlays
+            for ov in self._desktop_overlays.values():
+                ov.hide()
+
+            # Create or show single floating overlay
+            if not self._floating_overlay:
+                self._floating_overlay = self._create_overlay(is_floating=True)
+            self._floating_overlay.show()
+            self._floating_overlay.embed()
+            log.info("Always-on-Top active: single player card hovering across all screens")
+        else:
+            # ── Desktop Mode ──
+            if self._floating_overlay:
+                self._floating_overlay.hide()
+
+            screens = QGuiApplication.screens()
+            primary_scr = QGuiApplication.primaryScreen()
+            enabled_names = self._cfg.get("enabled_screens", [])
+            if not enabled_names and primary_scr:
+                enabled_names = [primary_scr.name()]
+
+            # Close overlays for screens no longer enabled
+            for name in list(self._desktop_overlays.keys()):
+                if name not in enabled_names:
+                    ov = self._desktop_overlays.pop(name)
+                    ov.close()
+
+            # Create or update overlays for enabled screens
+            for i, s in enumerate(screens):
+                s_name = s.name()
+                if (s_name in enabled_names) or (i in enabled_names):
+                    if s_name not in self._desktop_overlays:
+                        self._desktop_overlays[s_name] = self._create_overlay(target_screen=s, is_floating=False)
+                    ov = self._desktop_overlays[s_name]
+                    ov.show()
+                    ov.embed()
+                    if self._wp_path:
+                        ov.set_wallpaper(QPixmap(self._wp_path))
+                    if self._current_mask and self._cfg.get("depth_enabled", True):
+                        ov.set_foreground(self._current_mask)
+
+            log.info("Desktop mode active on %d screen(s)", len(self._desktop_overlays))
+
+        # Update tray action check state
+        if self._always_on_top_action:
+            self._always_on_top_action.blockSignals(True)
+            self._always_on_top_action.setChecked(is_top)
+            self._always_on_top_action.blockSignals(False)
+
+    # ── signal wiring ────────────────────────────────────────────────
+
+    def _wire_core(self) -> None:
+        # wallpaper → segmenter pipeline
+        self._watcher.wallpaper_changed.connect(self._on_wp)
+
+        # segmenter → overlay
+        self._segmenter.ready.connect(self._on_mask_ready)
+        self._segmenter.error.connect(self._on_mask_error)
+        self._segmenter.progress.connect(self._on_seg_progress)
+
+        # media → App broadcast handlers
+        self._media.track_changed.connect(self._on_track_changed)
+        self._media.lyrics_changed.connect(self._on_lyrics_changed)
+        self._media.caption_ready.connect(self._on_caption_ready)
+        self._media.playback_changed.connect(self._on_playback_changed)
+        self._media.position_changed.connect(self._on_position_changed)
+        self._media.session_lost.connect(self._on_session_lost)
+        self._media.auth_failed.connect(self._on_auth_failed)
+        self._media.shuffle_changed.connect(self._on_shuffle_changed)
+        self._media.repeat_changed.connect(self._on_repeat_changed)
+
+    # ── media broadcast handlers ─────────────────────────────────────
+
+    def _on_track_changed(self, info: dict) -> None:
+        self._last_track = info
+        for ov in self._active_overlays():
+            ov.player.set_track(info)
+
+    def _on_lyrics_changed(self, lyrics: list) -> None:
+        self._last_lyrics = lyrics
+        for ov in self._active_overlays():
+            ov.player.set_lyrics(lyrics)
+
+    def _on_caption_ready(self, text: str, lang: str) -> None:
+        self._last_caption = (text, lang)
+        for ov in self._active_overlays():
+            ov.player.set_caption(text, lang)
+
+    def _on_playback_changed(self, playing: bool) -> None:
+        self._last_playing = playing
+        for ov in self._active_overlays():
+            ov.player.set_playing(playing)
+
+    def _on_position_changed(self, pos: float, dur: float) -> None:
+        self._last_pos = (pos, dur)
+        for ov in self._active_overlays():
+            ov.player.set_position(pos, dur)
+
+    def _on_session_lost(self) -> None:
+        self._last_track = None
+        self._last_lyrics = []
+        self._last_playing = False
+        for ov in self._active_overlays():
+            ov.player.set_idle()
+
+    def _on_auth_failed(self) -> None:
+        for ov in self._active_overlays():
+            ov.player.set_auth_failed()
+
+    def _on_shuffle_changed(self, sh: bool) -> None:
+        for ov in self._active_overlays():
+            ov.player.set_shuffle(sh)
+
+    def _on_repeat_changed(self, rep: int) -> None:
+        for ov in self._active_overlays():
+            ov.player.set_repeat(rep)
 
     # ── tray ─────────────────────────────────────────────────────────
 
@@ -177,6 +323,14 @@ class App:
         a1 = QAction("⚙  Settings", menu)
         a1.triggered.connect(self._open_settings)
         menu.addAction(a1)
+
+        menu.addSeparator()
+
+        top_act = QAction("📌  Always on Top", menu, checkable=True)
+        top_act.setChecked(self._cfg.get("always_on_top", False))
+        top_act.toggled.connect(lambda v: self._cfg.set("always_on_top", v))
+        menu.addAction(top_act)
+        self._always_on_top_action = top_act
 
         menu.addSeparator()
 
@@ -201,9 +355,7 @@ class App:
     # ── lifecycle ────────────────────────────────────────────────────
 
     def start(self) -> None:
-        self._overlay.move_player(self._cfg["player_x"], self._cfg["player_y"])
-        self._overlay.show()
-        self._overlay.embed()
+        self._sync_overlays()
 
         self._tray.show()
         self._tray.showMessage(
@@ -220,33 +372,42 @@ class App:
 
     def _on_wp(self, path: str) -> None:
         if not path:
-            self._overlay.clear_foreground()
-            self._overlay.set_wallpaper(QPixmap())
+            self._current_mask = None
+            for ov in self._desktop_overlays.values():
+                ov.clear_foreground()
+                ov.set_wallpaper(QPixmap())
             self._wp_path = None
             return
         self._wp_path = path
-        self._overlay.set_wallpaper(QPixmap(path))
+        px = QPixmap(path)
+        for ov in self._desktop_overlays.values():
+            ov.set_wallpaper(px)
 
         # Auto-theme: extract dominant colors from wallpaper
         if self._cfg.get("auto_theme", True):
             self._apply_wallpaper_theme(path)
 
-        if self._cfg["depth_enabled"]:
+        if self._cfg["depth_enabled"] and not self._cfg.get("always_on_top", False):
             cached = self._segmenter.try_cache(path)
             if cached:
-                self._overlay.set_foreground(cached)
+                self._on_mask_ready(cached, path)
             else:
                 self._segmenter.segment(path)
 
     def _on_mask_ready(self, px: QPixmap, _path: str) -> None:
-        self._overlay.set_foreground(px)
+        self._current_mask = px
+        if not self._cfg.get("always_on_top", False) and self._cfg.get("depth_enabled", True):
+            for ov in self._desktop_overlays.values():
+                ov.set_foreground(px)
         self._tray.showMessage(
             "Depth Effect Ready", "Foreground segmentation complete ✓",
             QSystemTrayIcon.MessageIcon.Information, 2000,
         )
 
     def _on_mask_error(self, msg: str, _path: str) -> None:
-        self._overlay.clear_foreground()
+        self._current_mask = None
+        for ov in self._desktop_overlays.values():
+            ov.clear_foreground()
         self._tray.showMessage(
             "Segmentation Failed", msg[:120],
             QSystemTrayIcon.MessageIcon.Warning, 4000,
@@ -296,16 +457,18 @@ class App:
 
     def _handle_depth_toggle(self, enabled: bool) -> None:
         if enabled:
-            if self._wp_path:
+            if self._wp_path and not self._cfg.get("always_on_top", False):
                 cached = self._segmenter.try_cache(self._wp_path)
                 if cached:
-                    self._overlay.set_foreground(cached)
+                    self._on_mask_ready(cached, self._wp_path)
                 else:
                     self._segmenter.segment(self._wp_path)
             self._tray.showMessage("Depth", "Enabled ✓",
                                    QSystemTrayIcon.MessageIcon.Information, 1500)
         else:
-            self._overlay.clear_foreground()
+            self._current_mask = None
+            for ov in self._desktop_overlays.values():
+                ov.clear_foreground()
             self._tray.showMessage("Depth", "Disabled",
                                    QSystemTrayIcon.MessageIcon.Information, 1500)
 
@@ -376,7 +539,10 @@ class App:
         self._watcher.stop()
         self._media.stop()
         self._cfg.save_now()  # flush any pending saves
-        self._overlay.close()
+        for ov in self._desktop_overlays.values():
+            ov.close()
+        if self._floating_overlay:
+            self._floating_overlay.close()
         self._tray.hide()
         if self._settings_win:
             self._settings_win.close()

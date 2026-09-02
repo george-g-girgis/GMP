@@ -11,12 +11,13 @@ import shutil
 import logging
 
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QFontDatabase, QIcon
+from PyQt6.QtGui import QColor, QFont, QFontDatabase, QGuiApplication, QIcon
 from PyQt6.QtWidgets import (
     QCheckBox,
     QColorDialog,
     QComboBox,
     QDialog,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -251,6 +252,7 @@ class SettingsWindow(QDialog):
         tabs.addTab(self._build_appearance(), "Appearance")
         tabs.addTab(self._build_sources(), "Media Sources")
         tabs.addTab(self._build_captions(), "Captions & AI")
+        tabs.addTab(self._build_screens(), "Screens")
         tabs.addTab(self._build_colors(), "Colors")
         tabs.addTab(self._build_depth(), "Depth Effect")
         tabs.addTab(self._build_playback(), "Playback")
@@ -276,6 +278,17 @@ class SettingsWindow(QDialog):
         v.addLayout(self._slider_row(
             "Glow Intensity", "glow", 0, 255, self._cfg["glow"],
         ))
+
+        # Always on top
+        top_cb = QCheckBox("📌 Always on Top (Float above all windows across any screen)")
+        top_cb.setChecked(self._cfg.get("always_on_top", False))
+        top_cb.toggled.connect(lambda v: self._cfg.set("always_on_top", v))
+        v.addWidget(top_cb)
+
+        hint = QLabel("When enabled, the player hovers over all applications and can move across any screen. Desktop depth effect is temporarily disabled.")
+        hint.setStyleSheet(f"color: {_DIM}; font-size: 11px; margin-left: 26px; margin-top: -8px; margin-bottom: 4px;")
+        hint.setWordWrap(True)
+        v.addWidget(hint)
 
         # Lock layout
         lock_cb = QCheckBox("Lock Layout (prevent dragging & resizing)")
@@ -674,6 +687,154 @@ class SettingsWindow(QDialog):
         v.addWidget(badge_cb)
 
         v.addStretch()
+        return w
+
+    def _build_screens(self) -> QWidget:
+        """Screens tab: detect connected monitors and choose which screen(s) GMP appears on."""
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.setContentsMargins(20, 20, 20, 20)
+        v.setSpacing(14)
+
+        # ── Always on Top Banner if active ──
+        if self._cfg.get("always_on_top", False):
+            banner = QFrame()
+            banner.setStyleSheet(f"""
+                QFrame {{
+                    background: rgba(138, 92, 246, 0.15);
+                    border: 1px solid {_ACCENT};
+                    border-radius: 8px;
+                    padding: 8px 12px;
+                }}
+            """)
+            b_layout = QVBoxLayout(banner)
+            b_layout.setContentsMargins(8, 6, 8, 6)
+            b_layout.setSpacing(4)
+            b_title = QLabel("📌 Always on Top Active")
+            b_title.setFont(_font(12, True))
+            b_title.setStyleSheet(f"color: {_ACCENT};")
+            b_text = QLabel("The player is currently floating over all applications and can move freely across any connected monitor. Desktop depth effect is temporarily disabled. Disable Always on Top in Appearance to restore per-screen desktop embedding.")
+            b_text.setStyleSheet(f"color: {_TEXT}; font-size: 11px;")
+            b_text.setWordWrap(True)
+            b_layout.addWidget(b_title)
+            b_layout.addWidget(b_text)
+            v.addWidget(banner)
+
+        # Section header
+        v.addWidget(self._section("Connected Displays"))
+        desc = QLabel("Select which monitor(s) Glass Media Player will appear on. Each selected screen maintains its own wallpaper depth effect.")
+        desc.setStyleSheet(f"color: {_DIM}; font-size: 12px;")
+        desc.setWordWrap(True)
+        v.addWidget(desc)
+
+        # Quick Actions
+        actions_row = QHBoxLayout()
+        actions_row.setSpacing(8)
+        
+        btn_all = QPushButton("Select All Screens")
+        btn_all.setFont(_font(11))
+        btn_primary = QPushButton("Primary Screen Only")
+        btn_primary.setFont(_font(11))
+        
+        actions_row.addWidget(btn_all)
+        actions_row.addWidget(btn_primary)
+        actions_row.addStretch()
+        v.addLayout(actions_row)
+
+        # Scroll area for screen cards
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        
+        card_container = QWidget()
+        card_vbox = QVBoxLayout(card_container)
+        card_vbox.setContentsMargins(0, 4, 0, 4)
+        card_vbox.setSpacing(10)
+
+        screens = QGuiApplication.screens()
+        primary_scr = QGuiApplication.primaryScreen()
+        saved_screens = self._cfg.get("enabled_screens", [])
+        if not saved_screens and primary_scr:
+            saved_screens = [primary_scr.name()]
+
+        checkboxes: list[tuple[str, QCheckBox]] = []
+
+        for i, s in enumerate(screens):
+            geo = s.geometry()
+            s_name = s.name()
+            is_primary = (s == primary_scr)
+
+            card = QFrame()
+            card.setStyleSheet(f"""
+                QFrame {{
+                    background: {_CARD};
+                    border: 1px solid {_BORDER};
+                    border-radius: 8px;
+                    padding: 10px 14px;
+                }}
+            """)
+            c_layout = QHBoxLayout(card)
+            c_layout.setContentsMargins(10, 8, 10, 8)
+            c_layout.setSpacing(12)
+
+            info_layout = QVBoxLayout()
+            info_layout.setSpacing(3)
+            
+            title_text = f"🖥️ Screen {i + 1}: {s_name}"
+            if is_primary:
+                title_text += " (Primary)"
+            lbl_title = QLabel(title_text)
+            lbl_title.setFont(_font(12, True))
+            lbl_title.setStyleSheet(f"color: {_TEXT if not is_primary else _ACCENT};")
+            
+            lbl_geo = QLabel(f"Resolution: {geo.width()} × {geo.height()}  •  Position: ({geo.x()}, {geo.y()})  •  Scale: {s.devicePixelRatio():.1f}x")
+            lbl_geo.setFont(_font(10))
+            lbl_geo.setStyleSheet(f"color: {_DIM};")
+            
+            info_layout.addWidget(lbl_title)
+            info_layout.addWidget(lbl_geo)
+            c_layout.addLayout(info_layout, 1)
+
+            cb = QCheckBox("Enable")
+            cb.setFont(_font(11, True))
+            is_checked = (s_name in saved_screens) or (i in saved_screens)
+            cb.setChecked(is_checked)
+            c_layout.addWidget(cb)
+
+            checkboxes.append((s_name, cb))
+            card_vbox.addWidget(card)
+
+        card_vbox.addStretch()
+        scroll.setWidget(card_container)
+        v.addWidget(scroll, 1)
+
+        def _save_screen_selection():
+            selected = [name for name, cb in checkboxes if cb.isChecked()]
+            if not selected and primary_scr:
+                selected = [primary_scr.name()]
+                for name, cb in checkboxes:
+                    if name == primary_scr.name():
+                        cb.blockSignals(True)
+                        cb.setChecked(True)
+                        cb.blockSignals(False)
+            self._cfg.set("enabled_screens", selected)
+
+        for _, cb in checkboxes:
+            cb.toggled.connect(_save_screen_selection)
+
+        def _select_all():
+            for _, cb in checkboxes:
+                cb.setChecked(True)
+            _save_screen_selection()
+
+        def _select_primary():
+            for name, cb in checkboxes:
+                cb.setChecked(name == (primary_scr.name() if primary_scr else ""))
+            _save_screen_selection()
+
+        btn_all.clicked.connect(_select_all)
+        btn_primary.clicked.connect(_select_primary)
+
         return w
 
     def _build_colors(self) -> QWidget:

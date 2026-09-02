@@ -89,24 +89,38 @@ def _find_workerw() -> int | None:
 #  Overlay Window
 # ─────────────────────────────────────────────────────────────────────
 class OverlayWindow(QWidget):
-    """Full-screen overlay with depth-layered music player."""
+    """
+    Multi-mode overlay window:
+    - Desktop Mode: Full-screen per monitor, embedded in WorkerW, 3D depth cutout mask.
+    - Always-on-Top Floating Mode: Single compact card hovering over any connected screen,
+      depth effect disabled, free to move anywhere across all monitors.
+    """
 
     player_moved = pyqtSignal(int, int)   # (x, y) after drag
 
-    def __init__(self, cfg, parent=None) -> None:
+    def __init__(self, cfg, target_screen=None, is_floating: bool = False, parent=None) -> None:
         super().__init__(parent)
         self._cfg = cfg
+        self._is_floating = is_floating
+        self._screen = target_screen or QGuiApplication.primaryScreen()
 
         self._ww_hwnd: int | None = None
         self._wp_px: QPixmap | None = None     # full wallpaper
         self._fg_px: QPixmap | None = None     # foreground mask
+        self._fg: QLabel | None = None
 
-        # Target primary monitor for pixel-perfect 1:1 depth mask and wallpaper alignment
-        scr = QGuiApplication.primaryScreen()
-        geo = scr.geometry() if scr else QRect(0, 0, 1920, 1080)
-        self._scr = QSize(geo.width(), geo.height())
-        self._scr_rect = QRect(0, 0, geo.width(), geo.height())
-        log.info("Primary screen overlay: %dx%d", self._scr.width(), self._scr.height())
+        if self._is_floating:
+            # Compact floating window sizing to player card
+            w = self._cfg.get("player_w", 430)
+            h = self._cfg.get("player_h", 240)
+            self._scr = QSize(w, h)
+            self._scr_rect = QRect(0, 0, w, h)
+        else:
+            # Full-screen overlay covering the target monitor
+            geo = self._screen.geometry() if self._screen else QRect(0, 0, 1920, 1080)
+            self._scr = QSize(geo.width(), geo.height())
+            self._scr_rect = QRect(0, 0, geo.width(), geo.height())
+            log.info("Screen overlay [%s]: %dx%d at (%d,%d)", self.screen_name, geo.width(), geo.height(), geo.x(), geo.y())
 
         self._blur_timer = QElapsedTimer()
         self._blur_timer.start()
@@ -115,17 +129,40 @@ class OverlayWindow(QWidget):
         self._init_flags()
         self._init_layers()
 
+    @property
+    def screen_name(self) -> str:
+        return self._screen.name() if self._screen else "Primary"
+
+    @property
+    def is_floating(self) -> bool:
+        return self._is_floating
+
     # ── window setup ─────────────────────────────────────────────────
 
     def _init_flags(self) -> None:
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnBottomHint
-            | Qt.WindowType.Tool
-        )
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
-        self.setGeometry(self._scr_rect)
+        if self._is_floating:
+            self.setWindowFlags(
+                Qt.WindowType.FramelessWindowHint
+                | Qt.WindowType.WindowStaysOnTopHint
+                | Qt.WindowType.Tool
+            )
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+            self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+            px = self._cfg.get("player_x", 200)
+            py = self._cfg.get("player_y", 400)
+            self.setGeometry(px, py, self._scr.width(), self._scr.height())
+        else:
+            self.setWindowFlags(
+                Qt.WindowType.FramelessWindowHint
+                | Qt.WindowType.WindowStaysOnBottomHint
+                | Qt.WindowType.Tool
+            )
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+            self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+            if self._screen:
+                self.setGeometry(self._screen.geometry())
+            else:
+                self.setGeometry(self._scr_rect)
 
     def _init_layers(self) -> None:
         w = self._cfg.get("player_w", 430)
@@ -133,17 +170,21 @@ class OverlayWindow(QWidget):
 
         # Layer 1: the player card (interactive)
         self._player = PlayerWidget(self._cfg, w, h, self)
-        self._player.move(200, 400)
+        if self._is_floating:
+            self._player.move(0, 0)
+        else:
+            self._player.move(200, 400)
         
         # Connect native drag & resize
         self._player.dragged.connect(self._on_player_dragged)
         self._player.resized.connect(self._on_player_resized)
 
-        # Layer 2: foreground mask (visual-only, click-through)
-        self._fg = QLabel(self)
-        self._fg.setGeometry(self._scr_rect)
-        self._fg.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self._fg.raise_()
+        # Layer 2: foreground mask (visual-only, click-through) - only in desktop mode!
+        if not self._is_floating:
+            self._fg = QLabel(self)
+            self._fg.setGeometry(0, 0, self._scr.width(), self._scr.height())
+            self._fg.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            self._fg.raise_()
 
         self._refresh_mask()
 
@@ -154,17 +195,24 @@ class OverlayWindow(QWidget):
         return self._player
 
     def move_player(self, x: int, y: int) -> None:
-        self._player.move(x, y)
-        self._refresh_mask()
-        self._refresh_blur()
+        if self._is_floating:
+            self.move(x, y)
+        else:
+            self._player.move(x, y)
+            self._refresh_mask()
+            self._refresh_blur()
 
     def set_wallpaper(self, px: QPixmap) -> None:
         """Provide the raw wallpaper pixmap (for blur-background capture)."""
         self._wp_px = px
-        self._refresh_blur()
+        if not self._is_floating:
+            self._refresh_blur()
 
     def set_foreground(self, px: QPixmap) -> None:
         """Apply an RGBA foreground mask cutout over the overlay."""
+        if self._is_floating or not self._fg:
+            return  # Depth effect is disabled in floating always-on-top mode!
+
         if px is None or px.isNull():
             self._fg_px = None
             self._fg.clear()
@@ -179,26 +227,40 @@ class OverlayWindow(QWidget):
         self._fg_px = scaled
         self._fg.setPixmap(scaled)
         self._fg.raise_()
-        log.info("Foreground mask applied (%dx%d)", scaled.width(), scaled.height())
+        log.info("Foreground mask applied for %s (%dx%d)", self.screen_name, scaled.width(), scaled.height())
 
     def clear_foreground(self) -> None:
         self._fg_px = None
-        self._fg.clear()
+        if self._fg:
+            self._fg.clear()
 
     # ── desktop embedding ────────────────────────────────────────────
 
     def embed(self) -> None:
         """
-        Embed into the WorkerW desktop layer so the overlay sits between
-        the wallpaper and the desktop icons.
+        Embed into the WorkerW desktop layer if in Desktop mode,
+        or stay topmost if in floating mode.
         """
+        if self._is_floating:
+            hwnd = int(self.winId())
+            user32.SetParent(hwnd, None)
+            user32.SetWindowPos(
+                hwnd, -1, 0, 0, 0, 0,  # HWND_TOPMOST
+                _SWP_NOSIZE | _SWP_NOMOVE | _SWP_NOACTIVATE,
+            )
+            self.clearMask()
+            return
+
         self._ww_hwnd = _find_workerw()
         if self._ww_hwnd:
             hwnd = int(self.winId())
             user32.SetParent(hwnd, self._ww_hwnd)
-            self.setGeometry(self._scr_rect)
+            if self._screen:
+                self.setGeometry(self._screen.geometry())
+            else:
+                self.setGeometry(self._scr_rect)
             self._refresh_mask()
-            log.info("Embedded into WorkerW (hwnd=%s)", hex(self._ww_hwnd))
+            log.info("Embedded into WorkerW (hwnd=%s, screen=%s)", hex(self._ww_hwnd), self.screen_name)
         else:
             log.warning("WorkerW not found — falling back to bottom Z-order")
             self._push_bottom()
@@ -214,6 +276,16 @@ class OverlayWindow(QWidget):
 
     def _on_player_dragged(self, dx: int, dy: int) -> None:
         """Handle continuous dragging from the PlayerWidget."""
+        if self._is_floating:
+            nx = self.x() + dx
+            ny = self.y() + dy
+            self.move(nx, ny)
+            self._cfg._data["player_x"] = nx
+            self._cfg._data["player_y"] = ny
+            self._cfg.save()
+            self.player_moved.emit(nx, ny)
+            return
+
         x = max(0, min(self._player.x() + dx, self._scr.width() - self._player.width()))
         y = max(0, min(self._player.y() + dy, self._scr.height() - self._player.height()))
         self._player.move(x, y)
@@ -226,6 +298,15 @@ class OverlayWindow(QWidget):
 
     def _on_player_resized(self) -> None:
         """Handle dynamic resizing from the PlayerWidget."""
+        if self._is_floating:
+            w = self._player.width()
+            h = self._player.height()
+            self.resize(w, h)
+            self._cfg._data["player_w"] = w
+            self._cfg._data["player_h"] = h
+            self._cfg.save()
+            return
+
         self._refresh_mask()
         self._refresh_blur()
         # Persist the new size — write directly to avoid re-triggering
@@ -243,6 +324,10 @@ class OverlayWindow(QWidget):
         Update the input region so only the player card receives clicks,
         or make completely click-through if Overlay Mode (click_through) is enabled.
         """
+        if self._is_floating:
+            self.clearMask()
+            return
+
         if self._cfg.get("click_through", False) and self._cfg.get("locked", False):
             # Overlay Mode: click-through
             self.setMask(QRegion())

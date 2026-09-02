@@ -62,19 +62,38 @@ class WallpaperWatcher(QObject):
     def get_current_wallpaper() -> str | None:
         """
         Query the OS for the active wallpaper image path.
-
-        Returns *None* when Windows reports a solid colour or the file
-        cannot be found on disk.
+        Checks Win32 SPI_GETDESKWALLPAPER first, with automatic fallbacks to
+        the active TranscodedWallpaper cache and Windows Desktop registry.
         """
+        import os
+        import winreg
+
+        # 1. Primary Win32 query
         buf = ctypes.create_unicode_buffer(MAX_PATH)
         ok = ctypes.windll.user32.SystemParametersInfoW(
             SPI_GETDESKWALLPAPER, MAX_PATH, buf, 0
         )
         if ok and buf.value:
             p = Path(buf.value)
-            if p.is_file():
+            if p.is_file() and p.stat().st_size > 0:
                 return str(p)
-            log.warning("Wallpaper path reported but file missing: %s", buf.value)
+
+        # 2. Fallback: TranscodedWallpaper (current composite rendered by Windows Explorer)
+        tw = Path(os.path.expandvars(r"%APPDATA%\Microsoft\Windows\Themes\TranscodedWallpaper"))
+        if tw.is_file() and tw.stat().st_size > 0:
+            return str(tw)
+
+        # 3. Fallback: Windows Desktop Registry
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Control Panel\Desktop") as key:
+                reg_path, _ = winreg.QueryValueEx(key, "Wallpaper")
+                if reg_path:
+                    rp = Path(reg_path)
+                    if rp.is_file() and rp.stat().st_size > 0:
+                        return str(rp)
+        except Exception:
+            pass
+
         return None
 
     # ── internals ────────────────────────────────────────────────────

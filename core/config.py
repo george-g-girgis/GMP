@@ -36,6 +36,8 @@ DEFAULTS: dict[str, Any] = {
     "alpha": 150,
     "glow": 140,
     "locked": False,
+    "always_on_top": False,
+    "enabled_screens": [],
     "lyrics_color": "#aaaac3",
     "bg_color": "#16162c",
     "glow_color": "#ffffff",
