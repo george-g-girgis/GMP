@@ -46,6 +46,12 @@ DEFAULTS: dict[str, Any] = {
     # playback
     "poll_ms": 200,
     "lyrics_enabled": True,
+    # media source & video mode
+    "media_source_mode": "auto",       # "auto" | "manual"
+    "selected_media_source": "",       # app_id when in manual mode
+    "treat_browser_as_video": True,    # detect YouTube / Twitch in Edge, Chrome, etc.
+    "video_auto_hide": True,           # auto-hide controls while video plays
+    "video_mirror_enabled": True,      # hardware video mirror via DWM
     # startup / system
     "autostart": False,
     "wallpaper_poll_ms": 5000,

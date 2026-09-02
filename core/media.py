@@ -27,7 +27,21 @@ import ctypes
 from ctypes import wintypes
 import os
 
-user32 = ctypes.windll.user32
+kernel32 = ctypes.windll.kernel32
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+
+def get_process_name_for_pid(pid: int) -> str:
+    h_proc = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not h_proc:
+        return ""
+    buf = ctypes.create_unicode_buffer(1024)
+    size = wintypes.DWORD(1024)
+    res = ""
+    if kernel32.QueryFullProcessImageNameW(h_proc, 0, buf, ctypes.byref(size)):
+        res = os.path.basename(buf.value).lower()
+    kernel32.CloseHandle(h_proc)
+    return res
 
 
 def find_media_window(app_id: str, title: str = "") -> int | None:
@@ -43,25 +57,38 @@ def find_media_window(app_id: str, title: str = "") -> int | None:
         title_lower = title.lower() if title else ""
 
         best_hwnd = None
+        fallback_hwnd = None
         WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 
         def cb(hwnd, _):
-            nonlocal best_hwnd
-            if not user32.IsWindowVisible(hwnd):
+            nonlocal best_hwnd, fallback_hwnd
+            if not user32.IsWindowVisible(hwnd) or user32.IsIconic(hwnd):
                 return 1
             buf = ctypes.create_unicode_buffer(512)
             user32.GetWindowTextW(hwnd, buf, 512)
-            txt = buf.value.lower()
-            if title_lower and title_lower in txt:
+            w_title = buf.value.lower()
+            if not w_title:
+                return 1
+
+            # Check process name
+            pid = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            pname = get_process_name_for_pid(pid.value)
+
+            # Match exact track/video title in window title
+            if title_lower and title_lower in w_title:
                 best_hwnd = hwnd
                 return 0
-            if app_token and app_token in txt and not best_hwnd:
-                best_hwnd = hwnd
+
+            # Match app token in process name or window title
+            if app_token and (app_token in pname or app_token in w_title):
+                if not fallback_hwnd:
+                    fallback_hwnd = hwnd
             return 1
 
         user32.EnumDesktopWindows(hdesk, WNDENUMPROC(cb), 0)
         user32.CloseDesktop(hdesk)
-        return best_hwnd
+        return best_hwnd or fallback_hwnd
     except Exception as exc:
         log.debug("find_media_window failed: %s", exc)
         return None
@@ -80,11 +107,13 @@ class _MediaWorker(QObject):
     session_lost = pyqtSignal()
     shuffle_changed = pyqtSignal(bool)
     repeat_changed = pyqtSignal(int)
-    auth_failed = pyqtSignal() # Kept for compatibility if main.py is listening
+    auth_failed = pyqtSignal()
+    sessions_updated = pyqtSignal(list)
 
-    def __init__(self, poll_ms: int = 200) -> None:
+    def __init__(self, poll_ms: int = 200, cfg: Any = None) -> None:
         super().__init__()
         self._poll_ms = poll_ms
+        self._cfg = cfg
         self._running = False
         self._last_key: str | None = None
         self._last_playing: bool | None = None
@@ -94,6 +123,7 @@ class _MediaWorker(QObject):
         self._loop: asyncio.AbstractEventLoop | None = None
         self._slow_tick = 0
         self._mgr = None
+        self._active_session = None
         
         # We queue actions to the asyncio loop
         self._action_queue: asyncio.Queue | None = None
@@ -132,6 +162,10 @@ class _MediaWorker(QObject):
         if self._loop and self._action_queue:
             asyncio.run_coroutine_threadsafe(self._action_queue.put(("seek", pct)), self._loop)
 
+    def refresh_sessions(self) -> None:
+        if self._loop and self._action_queue:
+            asyncio.run_coroutine_threadsafe(self._action_queue.put("refresh_sessions"), self._loop)
+
     async def _main_loop(self) -> None:
         self._loop = asyncio.get_running_loop()
         self._action_queue = asyncio.Queue()
@@ -160,6 +194,8 @@ class _MediaWorker(QObject):
                     await self._ctrl_shuffle()
                 elif action == "repeat":
                     await self._ctrl_repeat()
+                elif action == "refresh_sessions":
+                    await self._poll_sessions_list()
                 elif isinstance(action, tuple) and action[0] == "seek":
                     await self._ctrl_seek(action[1])
                 self._action_queue.task_done()
@@ -179,11 +215,103 @@ class _MediaWorker(QObject):
                 sleep_s = max(self._poll_ms * 4, 800) / 1000.0
             await asyncio.sleep(sleep_s)
 
+    def _get_target_session(self):
+        """Intelligently select media session based on mode and playback state."""
+        if not self._mgr:
+            return None
+        try:
+            sessions = list(self._mgr.get_sessions())
+        except Exception:
+            sessions = []
+
+        if not sessions:
+            return None
+
+        source_mode = self._cfg.get("media_source_mode", "auto") if self._cfg else "auto"
+        selected_app = (self._cfg.get("selected_media_source", "") if self._cfg else "").strip().lower()
+
+        # 1. Manual mode: look for user's specifically chosen app
+        if source_mode == "manual" and selected_app:
+            for s in sessions:
+                app_id = (s.source_app_user_model_id or "").lower()
+                if selected_app in app_id or app_id in selected_app:
+                    return s
+
+        # 2. Auto mode: prioritize whichever session is actively playing (_PLAYING == 4)
+        for s in sessions:
+            try:
+                pb = s.get_playback_info()
+                if pb and pb.playback_status and pb.playback_status.value == _PLAYING:
+                    return s
+            except Exception:
+                pass
+
+        # 3. Fallback to Windows default current session
+        try:
+            curr = self._mgr.get_current_session()
+            if curr:
+                return curr
+        except Exception:
+            pass
+
+        return sessions[0]
+
+    async def _poll_sessions_list(self) -> None:
+        """Enumerate all active media sessions and emit sessions_updated signal."""
+        if not self._mgr:
+            return
+        try:
+            sessions = list(self._mgr.get_sessions())
+        except Exception:
+            sessions = []
+
+        result = []
+        source_mode = self._cfg.get("media_source_mode", "auto") if self._cfg else "auto"
+        selected_app = (self._cfg.get("selected_media_source", "") if self._cfg else "").strip().lower()
+        active_app = (self._active_session.source_app_user_model_id or "").lower() if self._active_session else ""
+
+        for s in sessions:
+            app_id = s.source_app_user_model_id or "Unknown"
+            is_playing = False
+            try:
+                pb = s.get_playback_info()
+                is_playing = (pb.playback_status and pb.playback_status.value == _PLAYING) if pb else False
+            except Exception:
+                pass
+
+            title = "Unknown"
+            artist = ""
+            ptype = 0
+            try:
+                props = await s.try_get_media_properties_async()
+                if props:
+                    title = props.title or "Unknown"
+                    artist = props.artist or ""
+                    ptype = int(props.playback_type) if props.playback_type is not None else 0
+            except Exception:
+                pass
+
+            if source_mode == "manual":
+                is_selected = bool(selected_app and (selected_app in app_id.lower() or app_id.lower() in selected_app))
+            else:
+                is_selected = (app_id.lower() == active_app)
+
+            result.append({
+                "app_id": app_id,
+                "title": title,
+                "artist": artist,
+                "is_playing": is_playing,
+                "playback_type": ptype,
+                "is_selected": is_selected,
+            })
+        self.sessions_updated.emit(result)
+
     async def _poll_fast(self) -> None:
         try:
             if not self._mgr:
                 return
-            session = self._mgr.get_current_session()
+            session = self._get_target_session()
+            self._active_session = session
 
             if session is None:
                 if self._has_session:
@@ -250,16 +378,20 @@ class _MediaWorker(QObject):
         try:
             if not self._mgr:
                 return
-            session = self._mgr.get_current_session()
+            session = self._get_target_session()
+            self._active_session = session
             if not session:
                 return
+
+            # Also refresh sessions list periodically
+            await self._poll_sessions_list()
 
             # Track metadata
             props = await session.try_get_media_properties_async()
             if not props:
                 return
 
-            key = f"{props.title}|{props.artist}|{props.album_title}"
+            key = f"{session.source_app_user_model_id}|{props.title}|{props.artist}|{props.album_title}"
             if key == self._last_key:
                 return
             self._last_key = key
@@ -280,11 +412,29 @@ class _MediaWorker(QObject):
             is_video = False
             source_hwnd = None
             try:
-                if props.playback_type is not None and int(props.playback_type) == 2:
-                    is_video = True
+                video_mirror_enabled = self._cfg.get("video_mirror_enabled", True) if self._cfg else True
+                treat_browser = self._cfg.get("treat_browser_as_video", True) if self._cfg else True
+                app_id_lower = (session.source_app_user_model_id or "").lower()
+                ptype = int(props.playback_type) if props.playback_type is not None else 0
+
+                if video_mirror_enabled:
+                    if ptype == 2:
+                        is_video = True
+                    elif treat_browser:
+                        browser_and_video_tokens = (
+                            "edge", "chrome", "firefox", "brave", "opera", "vlc",
+                            "mpc", "potplayer", "netflix", "video", "twitch", "youtube"
+                        )
+                        music_tokens = ("spotify", "itunes", "applemusic", "tidal", "deezer")
+                        if any(t in app_id_lower for t in browser_and_video_tokens) and not any(m in app_id_lower for m in music_tokens):
+                            is_video = True
+                        elif any(t in (props.title or "").lower() for t in ("youtube", "twitch", "netflix", "video")):
+                            is_video = True
+
+                if is_video:
                     source_hwnd = find_media_window(session.source_app_user_model_id, props.title or "")
-            except Exception:
-                pass
+            except Exception as e:
+                log.debug("Video check error: %s", e)
 
             # 1. EMIT INSTANTLY (without album art) to prevent UI freezing
             info = {
@@ -296,9 +446,10 @@ class _MediaWorker(QObject):
                 "repeat": rep,
                 "is_video": is_video,
                 "source_hwnd": source_hwnd,
+                "app_id": session.source_app_user_model_id or "",
             }
             self.track_changed.emit(info)
-            log.info("Track → %s — %s (video=%s, hwnd=%s)", props.artist, props.title, is_video, hex(source_hwnd) if source_hwnd else "None")
+            log.info("Track → %s — %s (app=%s, video=%s, hwnd=%s)", props.artist, props.title, session.source_app_user_model_id, is_video, hex(source_hwnd) if source_hwnd else "None")
 
             # 2. FETCH THUMBNAIL CONCURRENTLY (Does not block subsequent _poll_slow calls)
             async def _fetch_and_emit():
@@ -348,10 +499,8 @@ class _MediaWorker(QObject):
             return None
 
     def _get_current_session(self):
-        """Reuse the cached manager instead of re-requesting it."""
-        if not self._mgr:
-            return None
-        return self._mgr.get_current_session()
+        """Reuse the target session."""
+        return self._get_target_session()
 
     async def _ctrl_play_pause(self) -> None:
         s = self._get_current_session()
@@ -381,8 +530,6 @@ class _MediaWorker(QObject):
             pb = s.get_playback_info()
             if pb and pb.auto_repeat_mode:
                 from winrt.windows.media import MediaPlaybackAutoRepeatMode
-                # 0 = None, 1 = Track, 2 = List
-                # Toggle: None -> List -> Track -> None
                 cur = pb.auto_repeat_mode.value
                 nxt = 2 if cur == 0 else (1 if cur == 2 else 0)
                 await s.try_change_auto_repeat_mode_async(MediaPlaybackAutoRepeatMode(nxt))
@@ -396,6 +543,7 @@ class _MediaWorker(QObject):
                 ticks = int(dur * pct * 10_000_000)
                 await s.try_change_playback_position_async(ticks)
 
+
 class MediaController(QObject):
     """Real-time bridge between Windows media sessions and Qt signals."""
 
@@ -408,11 +556,13 @@ class MediaController(QObject):
     shuffle_changed = pyqtSignal(bool)
     repeat_changed = pyqtSignal(int)
     auth_failed = pyqtSignal()
+    sessions_updated = pyqtSignal(list)
 
-    def __init__(self, poll_ms: int = 1000, parent: QObject | None = None) -> None:
+    def __init__(self, poll_ms: int = 1000, cfg: Any = None, parent: QObject | None = None) -> None:
         super().__init__(parent)
+        self._cfg = cfg
         self._thread = QThread()
-        self._worker = _MediaWorker(poll_ms)
+        self._worker = _MediaWorker(poll_ms, cfg)
         self._worker.moveToThread(self._thread)
 
         from core.lyrics import LyricsFetcher
@@ -436,6 +586,10 @@ class MediaController(QObject):
         self._worker.shuffle_changed.connect(self.shuffle_changed.emit)
         self._worker.repeat_changed.connect(self.repeat_changed.emit)
         self._worker.auth_failed.connect(self.auth_failed.emit)
+        self._worker.sessions_updated.connect(self.sessions_updated.emit)
+
+    def refresh_sessions(self) -> None:
+        self._worker.refresh_sessions()
 
     def start(self) -> None:
         self._thread.start()

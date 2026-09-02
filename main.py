@@ -104,7 +104,7 @@ class App:
             cache_dir=ConfigManager.cache_dir(),
             model=self._cfg["model"],
         )
-        self._media = MediaController(poll_ms=self._cfg["poll_ms"])
+        self._media = MediaController(poll_ms=self._cfg["poll_ms"], cfg=self._cfg)
 
         # ── UI ──
         self._overlay = OverlayWindow(self._cfg)
@@ -274,7 +274,7 @@ class App:
             return
 
         from ui.settings import SettingsWindow
-        self._settings_win = SettingsWindow(self._cfg)
+        self._settings_win = SettingsWindow(self._cfg, self._media)
         self._settings_win.resegment_requested.connect(self._resegment)
         self._settings_win.show()
 

@@ -20,6 +20,8 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QRadioButton,
+    QScrollArea,
     QSlider,
     QSpinBox,
     QTabWidget,
@@ -217,15 +219,17 @@ class SettingsWindow(QDialog):
     resegment_requested = pyqtSignal()
     depth_toggled = pyqtSignal(bool)
 
-    def __init__(self, cfg: ConfigManager, parent=None) -> None:
+    def __init__(self, cfg: ConfigManager, media=None, parent=None) -> None:
         super().__init__(parent)
         self._cfg = cfg
+        self._media = media
+        self._latest_sessions: list = []
         self.setWindowTitle("GMP Settings")
         from pathlib import Path
         ico_file = Path(__file__).resolve().parent.parent / "assets" / "app.ico"
         if ico_file.exists():
             self.setWindowIcon(QIcon(str(ico_file)))
-        self.setFixedSize(560, 500)
+        self.setFixedSize(570, 530)
         self.setWindowFlags(
             Qt.WindowType.Dialog
             | Qt.WindowType.WindowCloseButtonHint
@@ -245,12 +249,17 @@ class SettingsWindow(QDialog):
         tabs = QTabWidget()
         tabs.setFont(_font(12))
         tabs.addTab(self._build_appearance(), "Appearance")
+        tabs.addTab(self._build_sources(), "Media Sources")
         tabs.addTab(self._build_colors(), "Colors")
         tabs.addTab(self._build_depth(), "Depth Effect")
         tabs.addTab(self._build_playback(), "Playback")
         tabs.addTab(self._build_startup(), "Startup")
         tabs.addTab(self._build_about(), "About")
         root.addWidget(tabs)
+
+        if self._media:
+            self._media.sessions_updated.connect(self._populate_sources_ui)
+            self._media.refresh_sessions()
 
     # ── Tab builders ─────────────────────────────────────────────────
 
@@ -299,6 +308,235 @@ class SettingsWindow(QDialog):
 
         v.addStretch()
         return w
+
+    def _build_sources(self) -> QWidget:
+        """Media Sources tab: choose between Auto (smart priority) or Manual selection of media apps."""
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.setContentsMargins(20, 20, 20, 20)
+        v.setSpacing(12)
+
+        v.addWidget(self._section("Playback Selection Mode"))
+
+        mode_group = QHBoxLayout()
+        mode_group.setSpacing(20)
+
+        self._auto_rb = QRadioButton("Auto (Smart Priority)")
+        self._auto_rb.setFont(_font(12, True))
+        self._auto_rb.setStyleSheet(f"color: {_TEXT};")
+        
+        self._manual_rb = QRadioButton("Manual Selection")
+        self._manual_rb.setFont(_font(12, True))
+        self._manual_rb.setStyleSheet(f"color: {_TEXT};")
+
+        current_mode = self._cfg.get("media_source_mode", "auto")
+        if current_mode == "manual":
+            self._manual_rb.setChecked(True)
+        else:
+            self._auto_rb.setChecked(True)
+
+        mode_group.addWidget(self._auto_rb)
+        mode_group.addWidget(self._manual_rb)
+        mode_group.addStretch()
+        v.addLayout(mode_group)
+
+        desc = QLabel(
+            "• Auto: Automatically switches to whichever app is currently playing (Spotify, YouTube, VLC, etc.).\n"
+            "• Manual: Locks GMP to a specific media player or browser tab chosen below."
+        )
+        desc.setStyleSheet(f"color: {_DIM}; font-size: 11px;")
+        desc.setWordWrap(True)
+        v.addWidget(desc)
+
+        # Sources Header + Refresh Button
+        sources_header = QHBoxLayout()
+        lbl = QLabel("Detected Media Applications")
+        lbl.setFont(_font(13, True))
+        lbl.setStyleSheet(f"color: {_TEXT};")
+        sources_header.addWidget(lbl)
+        sources_header.addStretch()
+
+        refresh_btn = QPushButton("🔄 Scan Sources")
+        refresh_btn.setFixedHeight(28)
+        refresh_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {_INPUT_BG};
+                color: {_TEXT};
+                border: 1px solid rgba(255,255,255,0.15);
+                border-radius: 6px;
+                padding: 4px 12px;
+                font-size: 11px;
+            }}
+            QPushButton:hover {{
+                border-color: {_ACCENT};
+                background: rgba(138, 92, 246, 0.25);
+            }}
+        """)
+        sources_header.addWidget(refresh_btn)
+        v.addLayout(sources_header)
+
+        # Scrollable container for session cards
+        sources_scroll = QScrollArea()
+        sources_scroll.setWidgetResizable(True)
+        sources_scroll.setFixedHeight(140)
+        sources_scroll.setStyleSheet(f"""
+            QScrollArea {{
+                background: transparent;
+                border: 1px solid {_BORDER};
+                border-radius: 8px;
+            }}
+            QScrollBar:vertical {{
+                background: transparent;
+                width: 6px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: rgba(255,255,255,0.2);
+                border-radius: 3px;
+            }}
+        """)
+
+        self._sources_container = QWidget()
+        self._sources_container.setStyleSheet("background: transparent;")
+        self._sources_layout = QVBoxLayout(self._sources_container)
+        self._sources_layout.setContentsMargins(8, 8, 8, 8)
+        self._sources_layout.setSpacing(6)
+        sources_scroll.setWidget(self._sources_container)
+        v.addWidget(sources_scroll)
+
+        def _on_mode_toggled():
+            mode = "manual" if self._manual_rb.isChecked() else "auto"
+            self._cfg.set("media_source_mode", mode)
+            self._populate_sources_ui(self._latest_sessions)
+
+        self._auto_rb.toggled.connect(_on_mode_toggled)
+        self._manual_rb.toggled.connect(_on_mode_toggled)
+
+        if self._media:
+            refresh_btn.clicked.connect(self._media.refresh_sessions)
+
+        self._populate_sources_ui([])
+
+        # Video Mode Settings
+        v.addWidget(self._section("Video Playback Behavior"))
+
+        browser_video_cb = QCheckBox("Treat Web Browsers (Edge, Chrome, Firefox) as Video")
+        browser_video_cb.setChecked(self._cfg.get("treat_browser_as_video", True))
+        browser_video_cb.toggled.connect(lambda val: self._cfg.set("treat_browser_as_video", val))
+        v.addWidget(browser_video_cb)
+
+        auto_hide_cb = QCheckBox("Auto-Hide controls while video is playing (reveal on hover)")
+        auto_hide_cb.setChecked(self._cfg.get("video_auto_hide", True))
+        auto_hide_cb.toggled.connect(lambda val: self._cfg.set("video_auto_hide", val))
+        v.addWidget(auto_hide_cb)
+
+        mirror_cb = QCheckBox("Enable Hardware-Accelerated Video Mirroring (DWM)")
+        mirror_cb.setChecked(self._cfg.get("video_mirror_enabled", True))
+        mirror_cb.toggled.connect(lambda val: self._cfg.set("video_mirror_enabled", val))
+        v.addWidget(mirror_cb)
+
+        v.addStretch()
+        return w
+
+    def _populate_sources_ui(self, sessions: list) -> None:
+        """Render detected media sessions in the Sources tab."""
+        self._latest_sessions = sessions or []
+        if not hasattr(self, "_sources_layout"):
+            return
+
+        while self._sources_layout.count() > 0:
+            item = self._sources_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        if not self._latest_sessions:
+            lbl = QLabel("No active media sessions detected.\nStart playing music or a video in Spotify, Edge, Chrome, or VLC.")
+            lbl.setStyleSheet(f"color: {_DIM}; font-size: 11px; padding: 12px;")
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._sources_layout.addWidget(lbl)
+            self._sources_layout.addStretch()
+            return
+
+        is_manual = (self._cfg.get("media_source_mode", "auto") == "manual")
+        selected_app = (self._cfg.get("selected_media_source", "")).lower()
+
+        for s in self._latest_sessions:
+            card = QWidget()
+            card.setStyleSheet(f"""
+                QWidget {{
+                    background: {_CARD};
+                    border: 1px solid {_BORDER};
+                    border-radius: 6px;
+                }}
+            """)
+            row = QHBoxLayout(card)
+            row.setContentsMargins(10, 6, 10, 6)
+            row.setSpacing(8)
+
+            app_id = s.get("app_id", "Unknown")
+            clean_name = app_id.replace(".exe", "").capitalize()
+            if "edge" in app_id.lower():
+                clean_name = "Microsoft Edge"
+            elif "chrome" in app_id.lower():
+                clean_name = "Google Chrome"
+            elif "spotify" in app_id.lower():
+                clean_name = "Spotify"
+            elif "vlc" in app_id.lower():
+                clean_name = "VLC Media Player"
+
+            title = s.get("title", "")
+            is_playing = s.get("is_playing", False)
+            is_video = (s.get("playback_type", 0) == 2 or "edge" in app_id.lower() or "chrome" in app_id.lower())
+
+            txt_box = QVBoxLayout()
+            txt_box.setSpacing(1)
+
+            t_lbl = QLabel(f"{clean_name} — {title}" if title and title != "Unknown" else clean_name)
+            t_lbl.setFont(_font(11, True))
+            t_lbl.setStyleSheet(f"color: {_TEXT};")
+            txt_box.addWidget(t_lbl)
+
+            status_text = "▶ Playing" if is_playing else "⏸ Paused"
+            status_color = "#10b981" if is_playing else _DIM
+            type_text = "🎬 Video" if is_video else "🎵 Music"
+
+            sub_lbl = QLabel(f"{status_text}  •  {type_text} ({app_id})")
+            sub_lbl.setFont(_font(10))
+            sub_lbl.setStyleSheet(f"color: {status_color};")
+            txt_box.addWidget(sub_lbl)
+
+            row.addLayout(txt_box)
+            row.addStretch()
+
+            if is_manual:
+                btn = QPushButton("Select")
+                is_this_selected = bool(selected_app and (selected_app in app_id.lower() or app_id.lower() in selected_app))
+                if is_this_selected:
+                    btn.setText("✓ Active")
+                    btn.setStyleSheet(f"background: {_ACCENT}; color: #ffffff; border-radius: 4px; padding: 3px 10px; font-size: 10px;")
+                else:
+                    btn.setStyleSheet(f"background: {_INPUT_BG}; color: {_TEXT}; border-radius: 4px; padding: 3px 10px; font-size: 10px;")
+
+                def _make_select_handler(aid):
+                    return lambda: self._select_source(aid)
+                btn.clicked.connect(_make_select_handler(app_id))
+                row.addWidget(btn)
+            else:
+                if s.get("is_selected", False):
+                    active_badge = QLabel("Active")
+                    active_badge.setFont(_font(10, True))
+                    active_badge.setStyleSheet(f"background: {_ACCENT}; color: #ffffff; border-radius: 4px; padding: 2px 6px;")
+                    row.addWidget(active_badge)
+
+            self._sources_layout.addWidget(card)
+
+        self._sources_layout.addStretch()
+
+    def _select_source(self, app_id: str) -> None:
+        self._cfg.set("media_source_mode", "manual")
+        self._cfg.set("selected_media_source", app_id)
+        if hasattr(self, "_manual_rb"):
+            self._manual_rb.setChecked(True)
+        self._populate_sources_ui(self._latest_sessions)
 
     def _build_colors(self) -> QWidget:
         """Colors tab: lyrics color, background color, glow color, auto-theme."""

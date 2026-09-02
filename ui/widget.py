@@ -684,6 +684,8 @@ class PlayerWidget(QWidget):
             delta = e.globalPosition() - self._drag_pos
             self.dragged.emit(int(delta.x()), int(delta.y()))
             self._drag_pos = e.globalPosition()
+            if self._is_video_mode:
+                self._update_thumbnail_rect()
 
         if self._is_video_mode:
             if self._ui_opacity.opacity() < 0.95:
@@ -694,6 +696,11 @@ class PlayerWidget(QWidget):
     def mouseReleaseEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
             self._drag_pos = None
+
+    def moveEvent(self, e):
+        super().moveEvent(e)
+        if self._is_video_mode:
+            self._update_thumbnail_rect()
 
     def _animate_ui_opacity(self, target: float) -> None:
         if hasattr(self, "_ui_anim"):
@@ -709,12 +716,19 @@ class PlayerWidget(QWidget):
 
     # ── video mode DWM helpers ───────────────────────────────────────
     def _enable_video_mode(self, hwnd: int) -> None:
-        if self._video_hwnd != hwnd:
+        if not self._cfg.get("video_mirror_enabled", True):
+            self._disable_video_mode()
+            return
+
+        top_win = self.window()
+        top_hwnd = int(top_win.winId())
+
+        if self._video_hwnd != hwnd or not self._video_thumb_id:
             self._disable_video_mode()
             self._video_hwnd = hwnd
             try:
                 thumb = wintypes.HANDLE()
-                hr = dwmapi.DwmRegisterThumbnail(int(self.winId()), hwnd, ctypes.byref(thumb))
+                hr = dwmapi.DwmRegisterThumbnail(top_hwnd, hwnd, ctypes.byref(thumb))
                 if hr == 0:
                     self._video_thumb_id = thumb.value
                     self._update_thumbnail_rect()
@@ -722,8 +736,11 @@ class PlayerWidget(QWidget):
                 log.debug("Failed to register DWM thumbnail: %s", e)
 
         self._is_video_mode = True
-        if self._playing and not self._is_hovered:
+        auto_hide = self._cfg.get("video_auto_hide", True)
+        if auto_hide and self._playing and not self._is_hovered:
             self._animate_ui_opacity(0.0)
+        else:
+            self._animate_ui_opacity(1.0)
 
     def _disable_video_mode(self) -> None:
         if self._video_thumb_id:
@@ -748,12 +765,14 @@ class PlayerWidget(QWidget):
                     | DWM_TNP_SOURCECLIENTAREAONLY
                 )
                 margin = 25
-                props.rcDestination = wintypes.RECT(
-                    margin + 2,
-                    margin + 2,
-                    self.width() - margin - 2,
-                    self.height() - margin - 2,
-                )
+                top_win = self.window()
+                pt = self.mapTo(top_win, QPoint(margin + 2, margin + 2))
+                x1 = max(0, pt.x())
+                y1 = max(0, pt.y())
+                w = max(10, self.width() - (2 * margin) - 4)
+                h = max(10, self.height() - (2 * margin) - 4)
+
+                props.rcDestination = wintypes.RECT(x1, y1, x1 + w, y1 + h)
                 props.opacity = 255
                 props.fVisible = True
                 props.fSourceClientAreaOnly = True
