@@ -250,25 +250,32 @@ def _accent_btn(text: str) -> QPushButton:
 #  Background model downloader
 # ─────────────────────────────────────────────────────────────────────
 class _ModelDownloadWorker(QObject):
-    """Downloads the rembg AI model in a background thread."""
+    """Downloads the rembg depth model and the Whisper Base captions model in a background thread."""
 
     status = pyqtSignal(str)
     finished = pyqtSignal()
     error = pyqtSignal(str)
 
-    def __init__(self, model_name: str = "u2net") -> None:
+    def __init__(self, depth_model: str = "u2net", captions_model: str = "base", download_depth: bool = True) -> None:
         super().__init__()
-        self._model = model_name
+        self._depth_model = depth_model
+        self._captions_model = captions_model
+        self._download_depth = download_depth
 
     def run(self) -> None:
         try:
-            self.status.emit(f"Importing rembg…")
-            from rembg import new_session
+            # 1. Depth Effect Model
+            if self._download_depth:
+                self.status.emit(f"Loading Depth Model ({self._depth_model}, ~170 MB)…")
+                from rembg import new_session
+                new_session(model_name=self._depth_model)
 
-            self.status.emit(f"Downloading {self._model} model (~170 MB)…")
-            new_session(model_name=self._model)
+            # 2. Captions AI Model (Base)
+            self.status.emit(f"Loading Whisper AI Captions Model ({self._captions_model}, ~140 MB)…")
+            from faster_whisper import WhisperModel
+            WhisperModel(self._captions_model, device="cpu", compute_type="int8")
 
-            self.status.emit("Model ready!")
+            self.status.emit("AI Models ready!")
             self.finished.emit()
         except Exception as e:
             self.error.emit(str(e))
@@ -394,10 +401,10 @@ class SetupWizard(QDialog):
         depth_cb.toggled.connect(lambda v: self._cfg.set("depth_enabled", v, save=False))
         v.addWidget(depth_cb)
 
-        # Model
+        # Depth Model
         model_row = QHBoxLayout()
-        model_lbl = QLabel("AI Model")
-        model_lbl.setFixedWidth(100)
+        model_lbl = QLabel("Depth Model")
+        model_lbl.setFixedWidth(110)
         model_combo = QComboBox()
         models = ["u2net", "u2netp", "isnet-general-use"]
         model_combo.addItems(models)
@@ -411,6 +418,27 @@ class SetupWizard(QDialog):
         model_row.addWidget(model_combo)
         model_row.addStretch()
         v.addLayout(model_row)
+
+        # Captions AI Model
+        whisper_row = QHBoxLayout()
+        whisper_lbl = QLabel("Captions Model")
+        whisper_lbl.setFixedWidth(110)
+        whisper_combo = QComboBox()
+        whisper_combo.addItem("Base (~140 MB, recommended)", "base")
+        whisper_combo.addItem("Small (~460 MB, higher accuracy)", "small")
+        cur_w = self._cfg.get("captions_whisper_model", "base")
+        if cur_w == "small":
+            whisper_combo.setCurrentIndex(1)
+        else:
+            whisper_combo.setCurrentIndex(0)
+            self._cfg.set("captions_whisper_model", "base", save=False)
+        whisper_combo.currentIndexChanged.connect(
+            lambda idx: self._cfg.set("captions_whisper_model", whisper_combo.itemData(idx), save=False)
+        )
+        whisper_row.addWidget(whisper_lbl)
+        whisper_row.addWidget(whisper_combo)
+        whisper_row.addStretch()
+        v.addLayout(whisper_row)
 
         v.addStretch()
 
@@ -440,14 +468,14 @@ class SetupWizard(QDialog):
 
         v.addStretch()
 
-        self._dl_title = QLabel("Preparing AI Model…")
+        self._dl_title = QLabel("Preparing AI Models…")
         self._dl_title.setFont(_font(18, True))
         self._dl_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         v.addWidget(self._dl_title)
 
         self._dl_desc = QLabel(
-            "Downloading the AI segmentation model for the depth effect.\n"
-            "This only happens once (~170 MB). Please wait…"
+            "Downloading the AI models for Depth Effect and Live Captions (Base).\n"
+            "This only happens once on first launch. Please wait…"
         )
         self._dl_desc.setFont(_font(11))
         self._dl_desc.setStyleSheet(f"color: {_DIM};")
@@ -492,25 +520,24 @@ class SetupWizard(QDialog):
         return w
 
     def _start_model_download(self) -> None:
-        """Navigate to download page and start the model download."""
+        """Navigate to download page and start both depth and captions model downloads."""
         self._go(2)
 
-        if not self._cfg.get("depth_enabled", True):
-            # Depth disabled — skip download entirely
-            self._dl_title.setText("AI Model — Skipped")
-            self._dl_desc.setText("Depth effect is disabled. You can enable it later in Settings.")
-            self._dl_progress.hide()
-            self._dl_status.setText("Ready to continue!")
-            self._dl_continue.show()
-            self._model_ready = True
-            return
+        download_depth = self._cfg.get("depth_enabled", True)
+        depth_model = self._cfg.get("model", "u2net")
+        captions_model = self._cfg.get("captions_whisper_model", "base")
+        if captions_model == "tiny":
+            captions_model = "base"
+            self._cfg.set("captions_whisper_model", "base")
 
-        # Start background download
-        model_name = self._cfg.get("model", "u2net")
-        self._dl_status.setText(f"Loading {model_name} model…")
+        self._dl_status.setText("Initializing AI models…")
 
         self._download_thread = QThread()
-        self._dl_worker = _ModelDownloadWorker(model_name)
+        self._dl_worker = _ModelDownloadWorker(
+            depth_model=depth_model,
+            captions_model=captions_model,
+            download_depth=download_depth,
+        )
         self._dl_worker.moveToThread(self._download_thread)
         self._download_thread.started.connect(self._dl_worker.run)
         self._dl_worker.status.connect(self._on_dl_status)
@@ -523,8 +550,8 @@ class SetupWizard(QDialog):
 
     def _on_dl_finished(self) -> None:
         self._model_ready = True
-        self._dl_title.setText("AI Model Ready ✓")
-        self._dl_desc.setText("The depth effect model is downloaded and ready to use.")
+        self._dl_title.setText("AI Models Ready ✓")
+        self._dl_desc.setText("Depth effect and Whisper AI live captions (Base) are downloaded and ready to use.")
         self._dl_progress.setRange(0, 100)
         self._dl_progress.setValue(100)
         self._dl_status.setText("Complete!")
@@ -536,14 +563,14 @@ class SetupWizard(QDialog):
 
     def _on_dl_error(self, msg: str) -> None:
         self._model_ready = True  # allow continuing anyway
-        self._dl_title.setText("Download Issue")
+        self._dl_title.setText("Download Notice")
         self._dl_desc.setText(
-            f"The model couldn't be downloaded now: {msg[:100]}\n\n"
-            "You can still use GMP — the depth effect will download\n"
-            "the model automatically when first needed."
+            f"Note: {msg[:100]}\n\n"
+            "You can still continue setup — any missing models will download\n"
+            "automatically in the background when first required."
         )
         self._dl_progress.hide()
-        self._dl_status.setText("You can continue without the depth effect.")
+        self._dl_status.setText("Ready to proceed.")
         self._dl_continue.show()
         if self._download_thread:
             self._download_thread.quit()

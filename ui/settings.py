@@ -650,11 +650,13 @@ class SettingsWindow(QDialog):
         model_row.addWidget(model_lbl)
 
         model_combo = QComboBox()
-        model_combo.setFont(_font(11))
-        model_combo.addItem("Tiny (~75 MB, ultra-fast, low CPU)", "tiny")
-        model_combo.addItem("Base (~140 MB, higher accuracy)", "base")
+        model_combo.addItem("Base (~140 MB, fast & accurate — Recommended)", "base")
+        model_combo.addItem("Small (~460 MB, higher accuracy)", "small")
 
-        cur_model = self._cfg.get("captions_whisper_model", "tiny")
+        cur_model = self._cfg.get("captions_whisper_model", "base")
+        if cur_model == "tiny":
+            cur_model = "base"
+            self._cfg.set("captions_whisper_model", "base")
         for i in range(model_combo.count()):
             if model_combo.itemData(i) == cur_model:
                 model_combo.setCurrentIndex(i)

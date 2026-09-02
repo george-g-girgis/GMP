@@ -71,7 +71,7 @@ class _CaptionWorker(QObject):
         log.info("AutoCaption worker stopped")
 
     def _ensure_model(self) -> None:
-        target_model = self._cfg.get("captions_whisper_model", "tiny") if self._cfg else "tiny"
+        target_model = self._cfg.get("captions_whisper_model", "base") if self._cfg else "base"
         if self._model is None or self._model_name != target_model:
             self.status_changed.emit(f"Loading Whisper AI ({target_model})…")
             from faster_whisper import WhisperModel

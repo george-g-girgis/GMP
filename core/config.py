@@ -49,14 +49,11 @@ DEFAULTS: dict[str, Any] = {
     # media source & video mode
     "media_source_mode": "auto",       # "auto" | "manual"
     "selected_media_source": "",       # app_id when in manual mode
-    "treat_browser_as_video": True,    # detect YouTube / Twitch in Edge, Chrome, etc.
-    "video_auto_hide": True,           # auto-hide controls while video plays
-    "video_mirror_enabled": True,      # hardware video mirror via DWM
     # captions & speech AI
     "captions_mode": "auto",           # "auto" | "speech_only" | "lrclib_only" | "disabled"
     "captions_lang_mode": "auto",      # "auto" | "manual"
     "captions_manual_lang": "en",      # language code when in manual mode
-    "captions_whisper_model": "tiny",  # "tiny" | "base"
+    "captions_whisper_model": "base",  # "base" | "small"
     "captions_show_badge": True,       # show language tag [EN], [AR], etc.
     # startup / system
     "autostart": False,
