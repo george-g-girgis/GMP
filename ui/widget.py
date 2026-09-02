@@ -858,13 +858,6 @@ class PlayerWidget(QWidget):
         self.update()
 
     def set_track(self, info: dict) -> None:
-        # Check if local video file path is provided (e.g. from VLC or user)
-        local_file = info.get("file_path")
-        if local_file and os.path.exists(local_file):
-            if self._native_player.current_file != local_file:
-                self.play_local_video(local_file)
-                return
-
         self._title.setText(info.get("title", "Unknown"))
         self._artist.setText(info.get("artist", "Unknown Artist"))
         self._album.setText(info.get("album", ""))

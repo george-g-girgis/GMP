@@ -24,6 +24,16 @@ gdi32 = ctypes.windll.gdi32
 
 user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
 user32.GetWindowRect.restype = wintypes.BOOL
+user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+user32.GetWindowLongW.restype = wintypes.LONG
+user32.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.LONG]
+user32.SetWindowLongW.restype = wintypes.LONG
+user32.SetLayeredWindowAttributes.argtypes = [wintypes.HWND, wintypes.COLORREF, ctypes.c_ubyte, wintypes.DWORD]
+user32.SetLayeredWindowAttributes.restype = wintypes.BOOL
+user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+user32.ShowWindow.restype = wintypes.BOOL
+user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT]
+user32.SetWindowPos.restype = wintypes.BOOL
 
 
 class _BITMAPINFOHEADER(ctypes.Structure):
@@ -107,9 +117,21 @@ class _VideoWorker(QObject):
         if not hwnd or not user32.IsWindow(wintypes.HWND(hwnd)):
             return None
 
-        # If minimized (iconic), do not force un-minimize onto screen
+        # If minimized (iconic), ghost it: make 100% transparent and click-through at bottom Z-order
+        # so it renders GPU video frames without being visible on screen or interfering with the user
         if user32.IsIconic(wintypes.HWND(hwnd)):
-            return None
+            try:
+                GWL_EXSTYLE = -20
+                WS_EX_LAYERED = 0x00080000
+                WS_EX_TRANSPARENT = 0x00000020
+                LWA_ALPHA = 0x00000002
+                old_ex = user32.GetWindowLongW(wintypes.HWND(hwnd), GWL_EXSTYLE)
+                user32.SetWindowLongW(wintypes.HWND(hwnd), GWL_EXSTYLE, old_ex | WS_EX_LAYERED | WS_EX_TRANSPARENT)
+                user32.SetLayeredWindowAttributes(wintypes.HWND(hwnd), 0, 0, LWA_ALPHA)
+                user32.ShowWindow(wintypes.HWND(hwnd), 4)  # SW_SHOWNOACTIVATE
+                user32.SetWindowPos(wintypes.HWND(hwnd), 1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)  # HWND_BOTTOM
+            except Exception as e:
+                log.debug("Failed to ghost minimized window: %s", e)
 
         rect = wintypes.RECT()
         if not user32.GetWindowRect(wintypes.HWND(hwnd), ctypes.byref(rect)):

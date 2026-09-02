@@ -138,26 +138,6 @@ def find_media_window(app_id: str, title: str = "") -> int | None:
         log.debug("find_media_window failed: %s", exc)
         return None
 
-def _extract_vlc_file_path(pid: int) -> str | None:
-    try:
-        import subprocess
-        import re
-        cmd = f"Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}' | Select-Object -ExpandProperty CommandLine"
-        res = subprocess.run(["powershell", "-Command", cmd], capture_output=True, text=True, timeout=1.5)
-        out = res.stdout.strip()
-        matches = re.findall(r'"([^"]+\.[a-zA-Z0-9]{2,4})"', out)
-        for m in matches:
-            if os.path.exists(m) and not m.lower().endswith(".exe"):
-                return m
-        parts = out.split()
-        for p in parts[1:]:
-            if os.path.exists(p) and not p.lower().endswith(".exe"):
-                return p
-    except Exception:
-        pass
-    return None
-
-
 def scan_standalone_players() -> list[dict]:
     """Inspect desktop windows for active players that do not hook into Windows GSMTC (e.g. VLC)."""
     results = []
@@ -181,7 +161,6 @@ def scan_standalone_players() -> list[dict]:
             user32.GetClassNameW(hwnd, cls_buf, 512)
             if cls_buf.value == "Qt5QWindowIcon":
                 is_playing = bool(title and title != "VLC media player")
-                file_path = _extract_vlc_file_path(pid.value)
                 results.append({
                     "app_id": "vlc.exe",
                     "name": "VLC Media Player",
@@ -191,7 +170,6 @@ def scan_standalone_players() -> list[dict]:
                     "is_video": True,
                     "is_playing": is_playing,
                     "playback_type": 2,
-                    "file_path": file_path,
                 })
         elif any(p in pname for p in ("mpc-hc", "potplayer", "wmplayer")):
             results.append({
@@ -566,11 +544,10 @@ class _MediaWorker(QObject):
                     "is_video": True,
                     "source_hwnd": session.get("hwnd"),
                     "app_id": app_id,
-                    "file_path": session.get("file_path"),
                 }
                 self.track_changed.emit(info)
                 self.playback_changed.emit(session.get("is_playing", True))
-                log.info("Track (Standalone) → %s — %s (app=%s, hwnd=%s, file=%s)", artist, title, app_id, hex(session.get("hwnd", 0)), session.get("file_path"))
+                log.info("Track (Standalone) → %s — %s (app=%s, hwnd=%s)", artist, title, app_id, hex(session.get("hwnd", 0)))
                 return
             self.track_changed.emit(info)
             log.info("Track → %s — %s (app=%s, video=%s, hwnd=%s)", props.artist, props.title, session.source_app_user_model_id, is_video, hex(source_hwnd) if source_hwnd else "None")
