@@ -27,6 +27,24 @@ import ctypes
 from ctypes import wintypes
 import os
 
+user32 = ctypes.windll.user32
+user32.IsWindow.argtypes = [wintypes.HWND]
+user32.IsWindow.restype = wintypes.BOOL
+user32.IsWindowVisible.argtypes = [wintypes.HWND]
+user32.IsWindowVisible.restype = wintypes.BOOL
+user32.IsIconic.argtypes = [wintypes.HWND]
+user32.IsIconic.restype = wintypes.BOOL
+user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+user32.GetWindowTextW.restype = ctypes.c_int
+user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+user32.GetClassNameW.restype = ctypes.c_int
+user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+user32.ShowWindow.restype = wintypes.BOOL
+user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT]
+user32.SetWindowPos.restype = wintypes.BOOL
+
 kernel32 = ctypes.windll.kernel32
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
@@ -120,6 +138,64 @@ def find_media_window(app_id: str, title: str = "") -> int | None:
         log.debug("find_media_window failed: %s", exc)
         return None
 
+def scan_standalone_players() -> list[dict]:
+    """Inspect desktop windows for active players that do not hook into Windows GSMTC (e.g. VLC)."""
+    results = []
+
+    def cb(hwnd, _):
+        if not user32.IsWindow(hwnd):
+            return 1
+        buf = ctypes.create_unicode_buffer(512)
+        user32.GetWindowTextW(hwnd, buf, 512)
+        txt = buf.value.strip()
+        if not txt:
+            return 1
+
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        pname = get_process_name_for_pid(pid.value)
+
+        if "vlc.exe" in pname or "vlc" in pname:
+            title = txt.replace(" - VLC media player", "").strip()
+            cls_buf = ctypes.create_unicode_buffer(512)
+            user32.GetClassNameW(hwnd, cls_buf, 512)
+            if cls_buf.value == "Qt5QWindowIcon":
+                is_playing = bool(title and title != "VLC media player")
+                results.append({
+                    "app_id": "vlc.exe",
+                    "name": "VLC Media Player",
+                    "title": title if is_playing else "VLC Media Player",
+                    "artist": "VLC Media Player",
+                    "hwnd": hwnd,
+                    "is_video": True,
+                    "is_playing": is_playing,
+                    "playback_type": 2,
+                })
+        elif any(p in pname for p in ("mpc-hc", "potplayer", "wmplayer")):
+            results.append({
+                "app_id": pname,
+                "name": pname.replace(".exe", "").capitalize(),
+                "title": txt,
+                "artist": pname.replace(".exe", "").capitalize(),
+                "hwnd": hwnd,
+                "is_video": True,
+                "is_playing": True,
+                "playback_type": 2,
+            })
+        return 1
+
+    try:
+        hdesk = user32.OpenInputDesktop(0, False, 0x0100 | 0x0040 | 0x0001)
+        if hdesk:
+            user32.SetThreadDesktop(hdesk)
+            proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)(cb)
+            user32.EnumDesktopWindows(hdesk, proc, 0)
+            user32.CloseDesktop(hdesk)
+    except Exception as e:
+        log.debug("scan_standalone_players error: %s", e)
+    return results
+
+
 log = logging.getLogger(__name__)
 
 _PLAYING = 4
@@ -204,8 +280,6 @@ class _MediaWorker(QObject):
             self._mgr = await Mgr.request_async()
         except ImportError:
             log.error("winrt packages missing!")
-            self.session_lost.emit()
-            return
 
         while self._running:
             # Check for queued actions
@@ -235,7 +309,7 @@ class _MediaWorker(QObject):
                     self._slow_task = asyncio.create_task(self._poll_slow())
                 self._slow_tick = 0
 
-            # Dynamic adaptive sleep: poll fast when actively playing, slow down when idle
+            # Dynamic adaptive sleep
             if self._last_playing:
                 sleep_s = self._poll_ms / 1000.0
             else:
@@ -243,37 +317,47 @@ class _MediaWorker(QObject):
             await asyncio.sleep(sleep_s)
 
     def _get_target_session(self):
-        """Intelligently select media session based on mode and playback state."""
+        """Intelligently select media session across GSMTC and standalone players (VLC, etc.)."""
+        source_mode = self._cfg.get("media_source_mode", "auto") if self._cfg else "auto"
+        selected_app = (self._cfg.get("selected_media_source", "") if self._cfg else "").strip().lower()
+
+        standalone = scan_standalone_players()
+
+        # 1. Manual mode: check standalone first
+        if source_mode == "manual" and selected_app:
+            for p in standalone:
+                if selected_app in p["app_id"] or p["app_id"] in selected_app:
+                    return p
+
+        # 2. Auto mode: if a standalone video player is playing, prioritize it!
+        if source_mode == "auto":
+            for p in standalone:
+                if p.get("is_playing"):
+                    return p
+
+        # Check GSMTC sessions
         if not self._mgr:
-            return None
+            return standalone[0] if standalone else None
         try:
             sessions = list(self._mgr.get_sessions())
         except Exception:
             sessions = []
 
-        if not sessions:
-            return None
-
-        source_mode = self._cfg.get("media_source_mode", "auto") if self._cfg else "auto"
-        selected_app = (self._cfg.get("selected_media_source", "") if self._cfg else "").strip().lower()
-
-        # 1. Manual mode: look for user's specifically chosen app
         if source_mode == "manual" and selected_app:
             for s in sessions:
                 app_id = (s.source_app_user_model_id or "").lower()
                 if selected_app in app_id or app_id in selected_app:
                     return s
 
-        # 2. Auto mode: prioritize whichever session is actively playing (_PLAYING == 4)
-        for s in sessions:
-            try:
-                pb = s.get_playback_info()
-                if pb and pb.playback_status and pb.playback_status.value == _PLAYING:
-                    return s
-            except Exception:
-                pass
+        if source_mode == "auto":
+            for s in sessions:
+                try:
+                    pb = s.get_playback_info()
+                    if pb and pb.playback_status and pb.playback_status.value == _PLAYING:
+                        return s
+                except Exception:
+                    pass
 
-        # 3. Fallback to Windows default current session
         try:
             curr = self._mgr.get_current_session()
             if curr:
@@ -281,62 +365,88 @@ class _MediaWorker(QObject):
         except Exception:
             pass
 
-        return sessions[0]
+        if sessions:
+            return sessions[0]
+        if standalone:
+            return standalone[0]
+        return None
 
     async def _poll_sessions_list(self) -> None:
-        """Enumerate all active media sessions and emit sessions_updated signal."""
-        if not self._mgr:
-            return
-        try:
-            sessions = list(self._mgr.get_sessions())
-        except Exception:
-            sessions = []
-
+        """Enumerate all active media sessions (GSMTC + VLC/standalone) and emit sessions_updated."""
         result = []
         source_mode = self._cfg.get("media_source_mode", "auto") if self._cfg else "auto"
         selected_app = (self._cfg.get("selected_media_source", "") if self._cfg else "").strip().lower()
-        active_app = (self._active_session.source_app_user_model_id or "").lower() if self._active_session else ""
 
-        for s in sessions:
-            app_id = s.source_app_user_model_id or "Unknown"
-            is_playing = False
-            try:
-                pb = s.get_playback_info()
-                is_playing = (pb.playback_status and pb.playback_status.value == _PLAYING) if pb else False
-            except Exception:
-                pass
+        active_app = ""
+        if isinstance(self._active_session, dict):
+            active_app = self._active_session.get("app_id", "").lower()
+        elif self._active_session and hasattr(self._active_session, "source_app_user_model_id"):
+            active_app = (self._active_session.source_app_user_model_id or "").lower()
 
-            title = "Unknown"
-            artist = ""
-            ptype = 0
-            try:
-                props = await s.try_get_media_properties_async()
-                if props:
-                    title = props.title or "Unknown"
-                    artist = props.artist or ""
-                    ptype = int(props.playback_type) if props.playback_type is not None else 0
-            except Exception:
-                pass
-
+        # 1. Standalone players (VLC, etc.)
+        for p in scan_standalone_players():
+            app_id = p["app_id"]
             if source_mode == "manual":
                 is_selected = bool(selected_app and (selected_app in app_id.lower() or app_id.lower() in selected_app))
             else:
-                is_selected = (app_id.lower() == active_app)
+                is_selected = (active_app == app_id.lower())
 
             result.append({
                 "app_id": app_id,
-                "title": title,
-                "artist": artist,
-                "is_playing": is_playing,
-                "playback_type": ptype,
+                "title": p["title"],
+                "artist": p["artist"],
+                "is_playing": p["is_playing"],
+                "playback_type": p["playback_type"],
                 "is_selected": is_selected,
+                "hwnd": p["hwnd"],
             })
+
+        # 2. GSMTC sessions
+        if self._mgr:
+            try:
+                sessions = list(self._mgr.get_sessions())
+            except Exception:
+                sessions = []
+
+            for s in sessions:
+                app_id = s.source_app_user_model_id or "Unknown"
+                is_playing = False
+                try:
+                    pb = s.get_playback_info()
+                    is_playing = (pb.playback_status and pb.playback_status.value == _PLAYING) if pb else False
+                except Exception:
+                    pass
+
+                title = "Unknown"
+                artist = ""
+                ptype = 0
+                try:
+                    props = await s.try_get_media_properties_async()
+                    if props:
+                        title = props.title or "Unknown"
+                        artist = props.artist or ""
+                        ptype = int(props.playback_type) if props.playback_type is not None else 0
+                except Exception:
+                    pass
+
+                if source_mode == "manual":
+                    is_selected = bool(selected_app and (selected_app in app_id.lower() or app_id.lower() in selected_app))
+                else:
+                    is_selected = (app_id.lower() == active_app)
+
+                result.append({
+                    "app_id": app_id,
+                    "title": title,
+                    "artist": artist,
+                    "is_playing": is_playing,
+                    "playback_type": ptype,
+                    "is_selected": is_selected,
+                })
+
         self.sessions_updated.emit(result)
 
     async def _poll_fast(self) -> None:
         try:
-            if not self._mgr:
-                return
             session = self._get_target_session()
             self._active_session = session
 
@@ -349,6 +459,15 @@ class _MediaWorker(QObject):
 
             self._has_session = True
 
+            # Standalone player handling
+            if isinstance(session, dict):
+                is_playing = session.get("is_playing", False)
+                if is_playing != self._last_playing:
+                    self._last_playing = is_playing
+                    self.playback_changed.emit(is_playing)
+                return
+
+            # GSMTC player handling
             pb = session.get_playback_info()
             is_playing = False
             if pb is not None:
@@ -360,7 +479,6 @@ class _MediaWorker(QObject):
                     self._last_playing = is_playing
                     self.playback_changed.emit(is_playing)
                     
-                # Check shuffle and repeat in fast loop for realtime sync
                 shuff = False
                 rep = 0
                 try:
@@ -377,7 +495,6 @@ class _MediaWorker(QObject):
                 if rep != self._last_repeat:
                     self._last_repeat = rep
                     self.repeat_changed.emit(rep)
-                    
             else:
                 if self._last_playing is not False:
                     self._last_playing = False
@@ -388,93 +505,50 @@ class _MediaWorker(QObject):
                 try:
                     cur = tl.position.total_seconds()
                     end = tl.end_time.total_seconds()
-                    
                     if is_playing:
                         now = datetime.now(timezone.utc)
                         elapsed = (now - tl.last_updated_time).total_seconds()
                         cur = min(cur + elapsed, end)
-                        
                     self.position_changed.emit(cur, end)
-                except Exception as e:
+                except Exception:
                     pass
-                    
         except Exception:
             log.error("Fast poll error: %s", traceback.format_exc())
 
     async def _poll_slow(self) -> None:
         try:
-            if not self._mgr:
-                return
             session = self._get_target_session()
             self._active_session = session
             if not session:
                 return
 
-            # Also refresh sessions list periodically
             await self._poll_sessions_list()
 
-            # Track metadata
-            props = await session.try_get_media_properties_async()
-            if not props:
+            # Standalone player handling (VLC, etc.)
+            if isinstance(session, dict):
+                app_id = session.get("app_id", "vlc.exe")
+                title = session.get("title", "Video")
+                artist = session.get("artist", "VLC Media Player")
+                key = f"{app_id}|{title}|{artist}"
+                if key == self._last_key:
+                    return
+                self._last_key = key
+
+                info = {
+                    "title": title,
+                    "artist": artist,
+                    "album": "",
+                    "art": None,
+                    "shuffle": False,
+                    "repeat": 0,
+                    "is_video": True,
+                    "source_hwnd": session.get("hwnd"),
+                    "app_id": app_id,
+                }
+                self.track_changed.emit(info)
+                self.playback_changed.emit(session.get("is_playing", True))
+                log.info("Track (Standalone) → %s — %s (app=%s, hwnd=%s)", artist, title, app_id, hex(session.get("hwnd", 0)))
                 return
-
-            key = f"{session.source_app_user_model_id}|{props.title}|{props.artist}|{props.album_title}"
-            if key == self._last_key:
-                return
-            self._last_key = key
-
-            pb = session.get_playback_info()
-            shuff = False
-            rep = 0
-            if pb:
-                try:
-                    if hasattr(pb, 'is_shuffle_active') and pb.is_shuffle_active is not None:
-                        shuff = pb.is_shuffle_active
-                    if hasattr(pb, 'auto_repeat_mode') and pb.auto_repeat_mode is not None:
-                        rep = pb.auto_repeat_mode.value
-                except Exception as e:
-                    log.error("Failed to read shuffle/repeat: %s", e)
-
-            # Check if playing video
-            is_video = False
-            source_hwnd = None
-            try:
-                video_mirror_enabled = self._cfg.get("video_mirror_enabled", True) if self._cfg else True
-                treat_browser = self._cfg.get("treat_browser_as_video", True) if self._cfg else True
-                app_id_lower = (session.source_app_user_model_id or "").lower()
-                ptype = int(props.playback_type) if props.playback_type is not None else 0
-
-                if video_mirror_enabled:
-                    if ptype == 2:
-                        is_video = True
-                    elif treat_browser:
-                        browser_and_video_tokens = (
-                            "edge", "chrome", "firefox", "brave", "opera", "vlc",
-                            "mpc", "potplayer", "netflix", "video", "twitch", "youtube"
-                        )
-                        music_tokens = ("spotify", "itunes", "applemusic", "tidal", "deezer")
-                        if any(t in app_id_lower for t in browser_and_video_tokens) and not any(m in app_id_lower for m in music_tokens):
-                            is_video = True
-                        elif any(t in (props.title or "").lower() for t in ("youtube", "twitch", "netflix", "video")):
-                            is_video = True
-
-                if is_video:
-                    source_hwnd = find_media_window(session.source_app_user_model_id, props.title or "")
-            except Exception as e:
-                log.debug("Video check error: %s", e)
-
-            # 1. EMIT INSTANTLY (without album art) to prevent UI freezing
-            info = {
-                "title": props.title or "Unknown",
-                "artist": props.artist or "Unknown Artist",
-                "album": props.album_title or "",
-                "art": None,
-                "shuffle": shuff,
-                "repeat": rep,
-                "is_video": is_video,
-                "source_hwnd": source_hwnd,
-                "app_id": session.source_app_user_model_id or "",
-            }
             self.track_changed.emit(info)
             log.info("Track → %s — %s (app=%s, video=%s, hwnd=%s)", props.artist, props.title, session.source_app_user_model_id, is_video, hex(source_hwnd) if source_hwnd else "None")
 
@@ -531,17 +605,38 @@ class _MediaWorker(QObject):
 
     async def _ctrl_play_pause(self) -> None:
         s = self._get_current_session()
-        if s:
+        if not s:
+            return
+        if isinstance(s, dict):
+            hwnd = s.get("hwnd")
+            if hwnd:
+                user32.PostMessageW(wintypes.HWND(hwnd), 0x0100, 0x20, 0)  # WM_KEYDOWN VK_SPACE
+                user32.PostMessageW(wintypes.HWND(hwnd), 0x0101, 0x20, 0)  # WM_KEYUP VK_SPACE
+        else:
             await s.try_toggle_play_pause_async()
 
     async def _ctrl_next(self) -> None:
         s = self._get_current_session()
-        if s:
+        if not s:
+            return
+        if isinstance(s, dict):
+            hwnd = s.get("hwnd")
+            if hwnd:
+                user32.PostMessageW(wintypes.HWND(hwnd), 0x0100, 0x4E, 0)  # 'N' next in VLC
+                user32.PostMessageW(wintypes.HWND(hwnd), 0x0101, 0x4E, 0)
+        else:
             await s.try_skip_next_async()
 
     async def _ctrl_prev(self) -> None:
         s = self._get_current_session()
-        if s:
+        if not s:
+            return
+        if isinstance(s, dict):
+            hwnd = s.get("hwnd")
+            if hwnd:
+                user32.PostMessageW(wintypes.HWND(hwnd), 0x0100, 0x50, 0)  # 'P' prev in VLC
+                user32.PostMessageW(wintypes.HWND(hwnd), 0x0101, 0x50, 0)
+        else:
             await s.try_skip_previous_async()
 
     async def _ctrl_shuffle(self) -> None:

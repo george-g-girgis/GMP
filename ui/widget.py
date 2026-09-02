@@ -373,8 +373,11 @@ class PlayerWidget(QWidget):
         self._seek_cooldown.setSingleShot(True)
         self._seek_cooldown.setInterval(400)
 
-        # Video mode & DWM live mirror state
-        self._video_thumb_id: int | None = None
+        # Video mode & real-time frame capture streamer
+        from core.video import VideoMirrorEngine
+        self._video_engine = VideoMirrorEngine(self)
+        self._video_engine.frame_ready.connect(self._on_video_frame)
+        self._video_pixmap: QPixmap | None = None
         self._is_video_mode: bool = False
         self._video_hwnd: int | None = None
         self._is_hovered: bool = False
@@ -731,35 +734,26 @@ class PlayerWidget(QWidget):
         if self._is_video_mode and self._playing and not self._is_scrubbing:
             self._animate_ui_opacity(0.0)
 
-    # ── video mode DWM helpers ───────────────────────────────────────
+    # ── real-time video streaming helpers ───────────────────────────
+    def _on_video_frame(self, pm: QPixmap) -> None:
+        if self._is_video_mode:
+            self._video_pixmap = pm
+            self.update()
+
     def _enable_video_mode(self, hwnd: int) -> None:
         if not self._cfg.get("video_mirror_enabled", True):
             self._disable_video_mode()
             return
 
-        top_win = self.window()
-        top_hwnd = int(top_win.winId())
-
-        if self._video_hwnd != hwnd or not self._video_thumb_id:
-            self._disable_video_mode()
-            self._video_hwnd = hwnd
-            try:
-                thumb = wintypes.HANDLE()
-                hr = dwmapi.DwmRegisterThumbnail(
-                    wintypes.HWND(top_hwnd),
-                    wintypes.HWND(hwnd),
-                    ctypes.byref(thumb),
-                )
-                if hr == 0:
-                    self._video_thumb_id = thumb.value
-                    self._update_thumbnail_rect()
-                    log.info("DWM video mirror active (thumb=%s, hwnd=%s)", thumb.value, hex(hwnd))
-                else:
-                    log.debug("DwmRegisterThumbnail failed with hr=0x%08x", hr & 0xffffffff)
-            except Exception as e:
-                log.debug("Failed to register DWM thumbnail: %s", e)
-
+        self._video_hwnd = hwnd
         self._is_video_mode = True
+        margin = 25
+        w = max(100, self.width() - 2 * margin)
+        h = max(100, self.height() - 2 * margin)
+        if hasattr(self, "_video_engine"):
+            self._video_engine.start_stream(hwnd, w, h)
+        log.info("Real-time video mirror active for hwnd=%s", hex(hwnd))
+
         auto_hide = self._cfg.get("video_auto_hide", True)
         if auto_hide and self._playing and not self._is_hovered:
             self._animate_ui_opacity(0.0)
@@ -767,45 +761,13 @@ class PlayerWidget(QWidget):
             self._animate_ui_opacity(1.0)
 
     def _disable_video_mode(self) -> None:
-        if self._video_thumb_id:
-            try:
-                dwmapi.DwmUnregisterThumbnail(wintypes.HANDLE(self._video_thumb_id))
-            except Exception:
-                pass
-            self._video_thumb_id = None
+        if hasattr(self, "_video_engine"):
+            self._video_engine.stop_stream()
         self._video_hwnd = None
         self._is_video_mode = False
+        self._video_pixmap = None
         self._animate_ui_opacity(1.0)
         self.update()
-
-    def _update_thumbnail_rect(self) -> None:
-        if self._video_thumb_id:
-            try:
-                props = DWM_THUMBNAIL_PROPERTIES()
-                props.dwFlags = (
-                    DWM_TNP_RECTDESTINATION
-                    | DWM_TNP_VISIBLE
-                    | DWM_TNP_OPACITY
-                    | DWM_TNP_SOURCECLIENTAREAONLY
-                )
-                margin = 25
-                top_win = self.window()
-                pt = self.mapTo(top_win, QPoint(margin + 2, margin + 2))
-                x1 = max(0, pt.x())
-                y1 = max(0, pt.y())
-                w = max(10, self.width() - (2 * margin) - 4)
-                h = max(10, self.height() - (2 * margin) - 4)
-
-                props.rcDestination = wintypes.RECT(x1, y1, x1 + w, y1 + h)
-                props.opacity = 255
-                props.fVisible = True
-                props.fSourceClientAreaOnly = True
-                dwmapi.DwmUpdateThumbnailProperties(
-                    wintypes.HANDLE(self._video_thumb_id),
-                    ctypes.byref(props),
-                )
-            except Exception as e:
-                log.debug("Failed to update thumbnail rect: %s", e)
 
     def resizeEvent(self, e) -> None:
         super().resizeEvent(e)
@@ -1041,13 +1003,28 @@ class PlayerWidget(QWidget):
             p.drawPixmap(self.rect(), self._blur_bg)
             p.setClipping(False)
 
-        # ── card background (cached gradient) ──
-        g = QLinearGradient(0.0, 0.0, 0.0, float(r.height()))
-        g.setColorAt(0.0, self._p_top_c)
-        g.setColorAt(1.0, self._p_bot_c)
-        p.setBrush(QBrush(g))
-        p.setPen(Qt.PenStyle.NoPen)
-        p.drawRoundedRect(rf, rad, rad)
+        # ── video frame drawing OR card background ──
+        if self._is_video_mode and self._video_pixmap and not self._video_pixmap.isNull():
+            path = QPainterPath()
+            path.addRoundedRect(rf, rad, rad)
+            p.setClipPath(path)
+            scaled_vid = self._video_pixmap.scaled(
+                r.size(),
+                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            vx = r.x() + (r.width() - scaled_vid.width()) // 2
+            vy = r.y() + (r.height() - scaled_vid.height()) // 2
+            p.drawPixmap(vx, vy, scaled_vid)
+            p.setClipping(False)
+        else:
+            # ── card background (cached gradient) ──
+            g = QLinearGradient(0.0, 0.0, 0.0, float(r.height()))
+            g.setColorAt(0.0, self._p_top_c)
+            g.setColorAt(1.0, self._p_bot_c)
+            p.setBrush(QBrush(g))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawRoundedRect(rf, rad, rad)
 
         # ── video mode dark tint when controls/datetime overlay is visible ──
         if self._is_video_mode and getattr(self, "_ui_opacity", None) and self._ui_opacity.opacity() > 0.02:
