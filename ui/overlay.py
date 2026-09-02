@@ -118,11 +118,17 @@ class OverlayWindow(QWidget):
     # ── window setup ─────────────────────────────────────────────────
 
     def _init_flags(self) -> None:
-        self.setWindowFlags(
+        is_top = self._cfg.get("always_on_top", True)
+        flags = (
             Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnBottomHint
             | Qt.WindowType.Tool
         )
+        if is_top:
+            flags |= Qt.WindowType.WindowStaysOnTopHint
+        else:
+            flags |= Qt.WindowType.WindowStaysOnBottomHint
+
+        self.setWindowFlags(flags)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setGeometry(self._scr_rect)
@@ -145,7 +151,16 @@ class OverlayWindow(QWidget):
         self._fg.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self._fg.raise_()
 
+        # Connect live config updates
+        self._cfg.changed.connect(self._on_cfg_changed)
+
         self._refresh_mask()
+
+    def _on_cfg_changed(self, key: str, val: Any) -> None:
+        if key == "always_on_top":
+            self.embed()
+        elif key in ("click_through", "locked"):
+            self._refresh_mask()
 
     # ── public API ───────────────────────────────────────────────────
 
@@ -200,9 +215,13 @@ class OverlayWindow(QWidget):
 
     def embed(self) -> None:
         """
-        Embed into the WorkerW desktop layer so the overlay sits between
-        the wallpaper and the desktop icons.
+        Embed into the WorkerW desktop layer if in Desktop mode,
+        or keep floating on top if Always-on-Top mode is active.
         """
+        if self._cfg.get("always_on_top", True):
+            self._set_always_on_top(True)
+            return
+
         self._ww_hwnd = _find_workerw()
         if self._ww_hwnd:
             hwnd = int(self.winId())
@@ -211,8 +230,36 @@ class OverlayWindow(QWidget):
             self._refresh_mask()
             log.info("Embedded into WorkerW (hwnd=%s)", hex(self._ww_hwnd))
         else:
-            log.warning("WorkerW not found — falling back to bottom Z-order")
-            self._push_bottom()
+            log.warning("WorkerW not found — keeping Always-on-Top")
+            self._set_always_on_top(True)
+
+    def _set_always_on_top(self, enabled: bool) -> None:
+        hwnd = int(self.winId())
+        user32.SetParent(hwnd, None)
+        flags = (
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.Tool
+        )
+        if enabled:
+            flags |= Qt.WindowType.WindowStaysOnTopHint
+        else:
+            flags |= Qt.WindowType.WindowStaysOnBottomHint
+
+        self.setWindowFlags(flags)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.show()
+        if enabled:
+            user32.SetWindowPos(
+                hwnd, -1, 0, 0, 0, 0,  # HWND_TOPMOST = -1
+                _SWP_NOSIZE | _SWP_NOMOVE | _SWP_NOACTIVATE,
+            )
+        else:
+            user32.SetWindowPos(
+                hwnd, _HWND_BOTTOM, 0, 0, 0, 0,
+                _SWP_NOSIZE | _SWP_NOMOVE | _SWP_NOACTIVATE,
+            )
+        self._refresh_mask()
 
     def _push_bottom(self) -> None:
         hwnd = int(self.winId())
@@ -251,8 +298,14 @@ class OverlayWindow(QWidget):
 
     def _refresh_mask(self) -> None:
         """
-        Update the input region so only the player card receives clicks.
+        Update the input region so only the player card receives clicks,
+        or make completely click-through if Overlay Mode (click_through) is enabled.
         """
+        if self._cfg.get("click_through", False) and self._cfg.get("locked", False):
+            # Overlay Mode: click-through
+            self.setMask(QRegion())
+            return
+
         pr = QRect(
             self._player.x(), self._player.y(),
             self._player.width(), self._player.height(),

@@ -180,6 +180,18 @@ class App:
 
         menu.addSeparator()
 
+        top_act = QAction("📌  Always on Top", menu, checkable=True)
+        top_act.setChecked(self._cfg.get("always_on_top", True))
+        top_act.toggled.connect(lambda v: self._cfg.set("always_on_top", v))
+        menu.addAction(top_act)
+
+        click_act = QAction("🔒  Overlay Mode (Click-Through)", menu, checkable=True)
+        click_act.setChecked(self._cfg.get("click_through", False))
+        click_act.toggled.connect(lambda v: (self._cfg.set("locked", v), self._cfg.set("click_through", v)))
+        menu.addAction(click_act)
+
+        menu.addSeparator()
+
         a2 = QAction("🔄  Re-segment Wallpaper", menu)
         a2.triggered.connect(self._resegment)
         menu.addAction(a2)
@@ -387,22 +399,42 @@ class App:
 #  Entry point
 # ─────────────────────────────────────────────────────────────────────
 def main() -> None:
+    import os
+    from pathlib import Path
+
+    base_dir = Path(__file__).resolve().parent
+    log_file = base_dir / "crash_log.txt"
+
+    # In pythonw.exe, sys.stdout and sys.stderr are None.
+    # Redirect them to prevent crashes and ensure uncaught errors are recorded!
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")
+    if sys.stderr is None:
+        try:
+            sys.stderr = open(log_file, "a", encoding="utf-8", buffering=1)
+        except Exception:
+            sys.stderr = open(os.devnull, "w", encoding="utf-8")
+
+    handlers = [
+        logging.FileHandler(log_file, mode="a", encoding="utf-8"),
+    ]
+    if hasattr(sys, "__stdout__") and sys.__stdout__:
+        handlers.append(logging.StreamHandler(sys.__stdout__))
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s  %(name)-18s  %(levelname)-5s  %(message)s",
         datefmt="%H:%M:%S",
+        handlers=handlers,
     )
     
     def handle_exception(exc_type, exc_value, exc_traceback):
         if issubclass(exc_type, KeyboardInterrupt):
             sys.__excepthook__(exc_type, exc_value, exc_traceback)
             return
-        logging.error("Uncaught exception", exc_info=(exc_type, exc_value, exc_traceback))
+        log.critical("Uncaught exception", exc_info=(exc_type, exc_value, exc_traceback))
 
-    if "--uninstall" in sys.argv:
-        from uninstall import main as uninstall_main
-        uninstall_main()
-        sys.exit(0)
+    sys.excepthook = handle_exception
 
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)

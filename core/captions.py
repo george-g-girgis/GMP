@@ -81,10 +81,26 @@ class _CaptionWorker(QObject):
             log.info("Whisper '%s' model loaded successfully", target_model)
 
     def _record_and_transcribe(self) -> None:
-        import soundcard as sc
+        try:
+            import soundcard as sc
+            speaker = sc.default_speaker()
+            if not speaker:
+                time.sleep(1.0)
+                return
+            loopback_mic = sc.get_microphone(id=str(speaker.name), include_loopback=True)
+            if not loopback_mic:
+                mics = sc.all_microphones(include_loopback=True)
+                loopbacks = [m for m in mics if getattr(m, 'isloopback', False)]
+                if loopbacks:
+                    loopback_mic = loopbacks[0]
+                else:
+                    time.sleep(1.0)
+                    return
+        except Exception as e:
+            log.debug("Loopback mic acquisition error: %s", e)
+            time.sleep(1.0)
+            return
 
-        speaker = sc.default_speaker()
-        loopback_mic = sc.get_microphone(id=str(speaker.name), include_loopback=True)
         num_frames = int(_SAMPLE_RATE * _CHUNK_SECONDS)
 
         with loopback_mic.recorder(samplerate=_SAMPLE_RATE, channels=1) as mic:

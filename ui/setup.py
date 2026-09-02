@@ -682,3 +682,15 @@ class SetupWizard(QDialog):
             enable()
 
         self.accept()
+
+    def closeEvent(self, e) -> None:
+        if hasattr(self, "_download_thread") and self._download_thread and self._download_thread.isRunning():
+            self._download_thread.quit()
+            self._download_thread.wait(1000)
+        super().closeEvent(e)
+
+    def reject(self) -> None:
+        if hasattr(self, "_download_thread") and self._download_thread and self._download_thread.isRunning():
+            self._download_thread.quit()
+            self._download_thread.wait(1000)
+        super().reject()
