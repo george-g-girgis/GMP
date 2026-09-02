@@ -673,16 +673,10 @@ class PlayerWidget(QWidget):
     def enterEvent(self, e):
         super().enterEvent(e)
         self._is_hovered = True
-        if self._is_video_mode:
-            self._animate_ui_opacity(1.0)
-            if self._playing:
-                self._hover_timer.start(3000)
 
     def leaveEvent(self, e):
         super().leaveEvent(e)
         self._is_hovered = False
-        if self._is_video_mode and self._playing and not self._is_scrubbing:
-            self._animate_ui_opacity(0.0)
 
     def mousePressEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton and not self._cfg["locked"]:
@@ -693,14 +687,6 @@ class PlayerWidget(QWidget):
             delta = e.globalPosition() - self._drag_pos
             self.dragged.emit(int(delta.x()), int(delta.y()))
             self._drag_pos = e.globalPosition()
-            if self._is_video_mode:
-                self._update_thumbnail_rect()
-
-        if self._is_video_mode:
-            if self._ui_opacity.opacity() < 0.95:
-                self._animate_ui_opacity(1.0)
-            if self._playing:
-                self._hover_timer.start(3000)
 
     def mouseReleaseEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:

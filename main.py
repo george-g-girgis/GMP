@@ -180,18 +180,6 @@ class App:
 
         menu.addSeparator()
 
-        top_act = QAction("📌  Always on Top", menu, checkable=True)
-        top_act.setChecked(self._cfg.get("always_on_top", True))
-        top_act.toggled.connect(lambda v: self._cfg.set("always_on_top", v))
-        menu.addAction(top_act)
-
-        click_act = QAction("🔒  Overlay Mode (Click-Through)", menu, checkable=True)
-        click_act.setChecked(self._cfg.get("click_through", False))
-        click_act.toggled.connect(lambda v: (self._cfg.set("locked", v), self._cfg.set("click_through", v)))
-        menu.addAction(click_act)
-
-        menu.addSeparator()
-
         a2 = QAction("🔄  Re-segment Wallpaper", menu)
         a2.triggered.connect(self._resegment)
         menu.addAction(a2)

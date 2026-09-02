@@ -277,23 +277,11 @@ class SettingsWindow(QDialog):
             "Glow Intensity", "glow", 0, 255, self._cfg["glow"],
         ))
 
-        # Always on top
-        top_cb = QCheckBox("Always on Top (Float above all applications)")
-        top_cb.setChecked(self._cfg.get("always_on_top", True))
-        top_cb.toggled.connect(lambda v: self._cfg.set("always_on_top", v))
-        v.addWidget(top_cb)
-
         # Lock layout
         lock_cb = QCheckBox("Lock Layout (prevent dragging & resizing)")
         lock_cb.setChecked(self._cfg["locked"])
         lock_cb.toggled.connect(lambda v: self._cfg.set("locked", v))
         v.addWidget(lock_cb)
-
-        # Click-through overlay mode
-        click_cb = QCheckBox("Overlay Mode (Click-through when layout is locked)")
-        click_cb.setChecked(self._cfg.get("click_through", False))
-        click_cb.toggled.connect(lambda v: self._cfg.set("click_through", v))
-        v.addWidget(click_cb)
 
         # Player size
         v.addWidget(self._section("Player Size"))
