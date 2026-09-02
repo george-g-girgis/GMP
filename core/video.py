@@ -107,12 +107,9 @@ class _VideoWorker(QObject):
         if not hwnd or not user32.IsWindow(wintypes.HWND(hwnd)):
             return None
 
-        # If minimized (iconic), un-minimize in background to restore render buffer
+        # If minimized (iconic), do not force un-minimize onto screen
         if user32.IsIconic(wintypes.HWND(hwnd)):
-            SW_SHOWNOACTIVATE = 4
-            HWND_BOTTOM = 1
-            user32.ShowWindow(wintypes.HWND(hwnd), SW_SHOWNOACTIVATE)
-            user32.SetWindowPos(wintypes.HWND(hwnd), HWND_BOTTOM, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
+            return None
 
         rect = wintypes.RECT()
         if not user32.GetWindowRect(wintypes.HWND(hwnd), ctypes.byref(rect)):
