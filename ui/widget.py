@@ -373,26 +373,7 @@ class PlayerWidget(QWidget):
         self._seek_cooldown.setSingleShot(True)
         self._seek_cooldown.setInterval(400)
 
-        # Native video player
-        from core.native_player import NativeVideoPlayer
-        self._native_player = NativeVideoPlayer(self)
-        self._native_player.frame_ready.connect(self._on_video_frame)
-        self._native_player.position_changed.connect(self.set_position)
-        self._native_player.playback_changed.connect(self.set_playing)
-
-        # Video mode & real-time frame capture streamer
-        from core.video import VideoMirrorEngine
-        self._video_engine = VideoMirrorEngine(self)
-        self._video_engine.frame_ready.connect(self._on_video_frame)
-        self._video_pixmap: QPixmap | None = None
-        self._is_video_mode: bool = False
-        self._video_hwnd: int | None = None
         self._is_hovered: bool = False
-        self.setAcceptDrops(True)
-
-        self._hover_timer = QTimer(self)
-        self._hover_timer.setSingleShot(True)
-        self._hover_timer.timeout.connect(self._on_hover_timeout)
 
         # Live top-right date and time ticker
         self._datetime_timer = QTimer(self)
@@ -737,69 +718,6 @@ class PlayerWidget(QWidget):
             self._ui_anim.setEndValue(target)
             self._ui_anim.start()
 
-    def play_local_video(self, file_path: str) -> None:
-        """Play a video file directly inside the GMP card natively without external windows."""
-        if hasattr(self, "_video_engine"):
-            self._video_engine.stop_stream()
-        self._video_hwnd = None
-        self._is_video_mode = True
-        self._native_player.play_file(file_path)
-        from pathlib import Path
-        import os
-        title = Path(file_path).stem
-        self._title.setText(title)
-        self._artist.setText("Local Video")
-        self._album.setText(os.path.basename(file_path))
-        self.set_playing(True)
-        if self._cfg.get("video_auto_hide", True) and not self._is_hovered:
-            self._animate_ui_opacity(0.0)
-
-    def _disable_video_mode(self) -> None:
-        if hasattr(self, "_native_player") and self._native_player.is_active:
-            self._native_player.stop()
-        if hasattr(self, "_video_engine"):
-            self._video_engine.stop_stream()
-        self._video_hwnd = None
-        self._is_video_mode = False
-        self._video_pixmap = None
-        self._animate_ui_opacity(1.0)
-        self.update()
-
-    def _on_hover_timeout(self) -> None:
-        if self._is_video_mode and self._playing and not self._is_scrubbing:
-            self._animate_ui_opacity(0.0)
-
-    # ── real-time video streaming helpers ───────────────────────────
-    def _on_video_frame(self, pm: QPixmap) -> None:
-        if self._is_video_mode:
-            self._video_pixmap = pm
-            self.update()
-
-    def _enable_video_mode(self, hwnd: int) -> None:
-        if not self._cfg.get("video_mirror_enabled", True):
-            self._disable_video_mode()
-            return
-
-        self._video_hwnd = hwnd
-        self._is_video_mode = True
-        margin = 25
-        w = max(100, self.width() - 2 * margin)
-        h = max(100, self.height() - 2 * margin)
-        if hasattr(self, "_video_engine"):
-            self._video_engine.start_stream(hwnd, w, h)
-        log.info("Real-time video mirror active for hwnd=%s", hex(hwnd))
-
-        auto_hide = self._cfg.get("video_auto_hide", True)
-        if auto_hide and self._playing and not self._is_hovered:
-            self._animate_ui_opacity(0.0)
-        else:
-            self._animate_ui_opacity(1.0)
-
-        self._is_video_mode = False
-        self._video_pixmap = None
-        self._animate_ui_opacity(1.0)
-        self.update()
-
     def resizeEvent(self, e) -> None:
         super().resizeEvent(e)
         if hasattr(self, '_grip'):
@@ -825,9 +743,6 @@ class PlayerWidget(QWidget):
         if hasattr(self, "_date_lbl"):
             self._date_lbl.setFont(_font(int(10 * s)))
 
-        if self._is_video_mode:
-            self._update_thumbnail_rect()
-        
         new_art_sz = int(68 * s)
         old_art_sz = self._art.width()
         self._art.setFixedSize(new_art_sz, new_art_sz)
@@ -870,14 +785,6 @@ class PlayerWidget(QWidget):
             
         self.set_shuffle(info.get("shuffle", False))
         self.set_repeat(info.get("repeat", 0))
-
-        # Video mode handling
-        is_video = bool(info.get("is_video", False))
-        source_hwnd = info.get("source_hwnd")
-        if is_video and source_hwnd and not self._native_player.is_active:
-            self._enable_video_mode(source_hwnd)
-        elif not self._native_player.is_active:
-            self._disable_video_mode()
 
     def set_caption(self, text: str, lang: str = "AUTO") -> None:
         """Display live speech-to-text auto-generated captions."""
@@ -929,17 +836,9 @@ class PlayerWidget(QWidget):
         if self._playing != playing:
             self._playing = playing
             self._btn_play.set_icon_text(_ICON_PAUSE if playing else _ICON_PLAY)
-            if self._is_video_mode:
-                if playing and not self._is_hovered:
-                    self._animate_ui_opacity(0.0)
-                elif not playing:
-                    self._animate_ui_opacity(1.0)
 
     def _on_play_clicked(self) -> None:
         """Optimistic instant feedback when play/pause is clicked."""
-        if getattr(self, "_native_player", None) and self._native_player.is_active:
-            self._native_player.toggle_play_pause()
-            return
         self.set_playing(not self._playing)
         self.play_pause.emit()
 
@@ -964,60 +863,7 @@ class PlayerWidget(QWidget):
     def _on_scrub_finish(self, pct: float) -> None:
         self._is_scrubbing = False
         self._seek_cooldown.start()
-        if getattr(self, "_native_player", None) and self._native_player.is_active:
-            self._native_player.seek_percent(pct)
-            return
         self.seek.emit(pct)
-
-    def dragEnterEvent(self, e):
-        if e.mimeData().hasUrls():
-            for u in e.mimeData().urls():
-                p = u.toLocalFile()
-                if os.path.splitext(p)[1].lower() in (".mp4", ".mkv", ".avi", ".mov", ".webm", ".wmv", ".flv", ".m4v"):
-                    e.acceptProposedAction()
-                    return
-        super().dragEnterEvent(e)
-
-    def dropEvent(self, e):
-        if e.mimeData().hasUrls():
-            for u in e.mimeData().urls():
-                p = u.toLocalFile()
-                if os.path.exists(p) and os.path.splitext(p)[1].lower() in (".mp4", ".mkv", ".avi", ".mov", ".webm", ".wmv", ".flv", ".m4v"):
-                    self.play_local_video(p)
-                    e.acceptProposedAction()
-                    return
-        super().dropEvent(e)
-
-    def contextMenuEvent(self, e) -> None:
-        from PyQt6.QtWidgets import QMenu
-        from PyQt6.QtGui import QAction
-        menu = QMenu(self)
-        menu.setStyleSheet("""
-            QMenu { background: #16162a; color: #f0f0f5; border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; padding: 4px; font-family: 'Segoe UI Variable Display', 'Segoe UI'; font-size: 12px; }
-            QMenu::item { padding: 6px 16px; border-radius: 4px; }
-            QMenu::item:selected { background: rgba(255,255,255,0.12); }
-        """)
-        act_open = QAction("🎬  Open Video File...", menu)
-        act_open.triggered.connect(self._prompt_open_video)
-        menu.addAction(act_open)
-
-        if getattr(self, "_native_player", None) and self._native_player.is_active:
-            act_close = QAction("⏹  Close Video", menu)
-            act_close.triggered.connect(self._disable_video_mode)
-            menu.addAction(act_close)
-
-        menu.exec(e.globalPos())
-
-    def _prompt_open_video(self) -> None:
-        from PyQt6.QtWidgets import QFileDialog
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Open Video File",
-            "",
-            "Video Files (*.mp4 *.mkv *.avi *.mov *.webm *.wmv *.flv *.m4v);;All Files (*.*)",
-        )
-        if path and os.path.exists(path):
-            self.play_local_video(path)
 
     def set_position(self, cur: float, total: float) -> None:
         self._current_duration = cur
@@ -1090,35 +936,13 @@ class PlayerWidget(QWidget):
             p.drawPixmap(self.rect(), self._blur_bg)
             p.setClipping(False)
 
-        # ── video frame drawing OR card background ──
-        if self._is_video_mode and self._video_pixmap and not self._video_pixmap.isNull():
-            path = QPainterPath()
-            path.addRoundedRect(rf, rad, rad)
-            p.setClipPath(path)
-            scaled_vid = self._video_pixmap.scaled(
-                r.size(),
-                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-            vx = r.x() + (r.width() - scaled_vid.width()) // 2
-            vy = r.y() + (r.height() - scaled_vid.height()) // 2
-            p.drawPixmap(vx, vy, scaled_vid)
-            p.setClipping(False)
-        else:
-            # ── card background (cached gradient) ──
-            g = QLinearGradient(0.0, 0.0, 0.0, float(r.height()))
-            g.setColorAt(0.0, self._p_top_c)
-            g.setColorAt(1.0, self._p_bot_c)
-            p.setBrush(QBrush(g))
-            p.setPen(Qt.PenStyle.NoPen)
-            p.drawRoundedRect(rf, rad, rad)
-
-        # ── video mode dark tint when controls/datetime overlay is visible ──
-        if self._is_video_mode and getattr(self, "_ui_opacity", None) and self._ui_opacity.opacity() > 0.02:
-            dim_alpha = int(140 * self._ui_opacity.opacity())
-            p.setBrush(QBrush(QColor(0, 0, 0, dim_alpha)))
-            p.setPen(Qt.PenStyle.NoPen)
-            p.drawRoundedRect(rf, rad, rad)
+        # ── card background (cached gradient) ──
+        g = QLinearGradient(0.0, 0.0, 0.0, float(r.height()))
+        g.setColorAt(0.0, self._p_top_c)
+        g.setColorAt(1.0, self._p_bot_c)
+        p.setBrush(QBrush(g))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawRoundedRect(rf, rad, rad)
 
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.setPen(QPen(_BORDER, 1.2))

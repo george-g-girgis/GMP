@@ -167,9 +167,9 @@ def scan_standalone_players() -> list[dict]:
                     "title": title if is_playing else "VLC Media Player",
                     "artist": "VLC Media Player",
                     "hwnd": hwnd,
-                    "is_video": True,
+                    "is_video": False,
                     "is_playing": is_playing,
-                    "playback_type": 2,
+                    "playback_type": 1,
                 })
         elif any(p in pname for p in ("mpc-hc", "potplayer", "wmplayer")):
             results.append({
@@ -178,9 +178,9 @@ def scan_standalone_players() -> list[dict]:
                 "title": txt,
                 "artist": pname.replace(".exe", "").capitalize(),
                 "hwnd": hwnd,
-                "is_video": True,
+                "is_video": False,
                 "is_playing": True,
-                "playback_type": 2,
+                "playback_type": 1,
             })
         return 1
 
@@ -323,58 +323,95 @@ class _MediaWorker(QObject):
             await asyncio.sleep(sleep_s)
 
     def _get_target_session(self):
-        """Intelligently select media session across GSMTC and standalone players (VLC, etc.)."""
+        """
+        Intelligently select media session across GSMTC and standalone players (VLC, etc.).
+
+        Rules:
+        - Manual Mode: Returns the user-selected source from dropdown (even if paused).
+        - Auto Mode:
+          * ONLY currently playing media! (if not playing, do not show)
+          * Strict Priority:
+            1. Spotify
+            2. YouTube (in browsers: Brave, Chrome, Edge, Firefox, Opera)
+            3. VLC Media Player
+            4. Other playing players
+          * If nothing is playing, return None!
+        """
         source_mode = self._cfg.get("media_source_mode", "auto") if self._cfg else "auto"
         selected_app = (self._cfg.get("selected_media_source", "") if self._cfg else "").strip().lower()
 
         standalone = scan_standalone_players()
 
-        # 1. Manual mode: check standalone first
+        sessions = []
+        if self._mgr:
+            try:
+                sessions = list(self._mgr.get_sessions())
+            except Exception:
+                sessions = []
+
+        # ── 1. MANUAL MODE ──────────────────────────────────────────
         if source_mode == "manual" and selected_app:
+            # Check standalone first
             for p in standalone:
-                if selected_app in p["app_id"] or p["app_id"] in selected_app:
+                app_id = p.get("app_id", "").lower()
+                name = p.get("name", "").lower()
+                if selected_app == app_id or selected_app in app_id or selected_app in name:
                     return p
-
-        # 2. Auto mode: if a standalone video player is playing, prioritize it!
-        if source_mode == "auto":
-            for p in standalone:
-                if p.get("is_playing"):
-                    return p
-
-        # Check GSMTC sessions
-        if not self._mgr:
-            return standalone[0] if standalone else None
-        try:
-            sessions = list(self._mgr.get_sessions())
-        except Exception:
-            sessions = []
-
-        if source_mode == "manual" and selected_app:
+            # Check GSMTC sessions
             for s in sessions:
                 app_id = (s.source_app_user_model_id or "").lower()
-                if selected_app in app_id or app_id in selected_app:
+                if selected_app == app_id or selected_app in app_id:
                     return s
 
-        if source_mode == "auto":
-            for s in sessions:
-                try:
-                    pb = s.get_playback_info()
-                    if pb and pb.playback_status and pb.playback_status.value == _PLAYING:
-                        return s
-                except Exception:
-                    pass
+        # ── 2. AUTO MODE (Only playing media, strict priority) ───────
+        playing_spotify = None
+        playing_youtube = None
+        playing_vlc = None
+        playing_other = None
 
-        try:
-            curr = self._mgr.get_current_session()
-            if curr:
-                return curr
-        except Exception:
-            pass
+        # Check GSMTC sessions
+        for s in sessions:
+            try:
+                pb = s.get_playback_info()
+                is_playing = bool(pb and pb.playback_status and pb.playback_status.value == _PLAYING)
+                if not is_playing:
+                    continue
 
-        if sessions:
-            return sessions[0]
-        if standalone:
-            return standalone[0]
+                app_id = (s.source_app_user_model_id or "").lower()
+                if "spotify" in app_id:
+                    if not playing_spotify:
+                        playing_spotify = s
+                elif any(b in app_id for b in ("brave", "chrome", "msedge", "edge", "firefox", "opera")):
+                    if not playing_youtube:
+                        playing_youtube = s
+                else:
+                    if not playing_other:
+                        playing_other = s
+            except Exception:
+                pass
+
+        # Check standalone players (VLC, MPC-HC, PotPlayer)
+        for p in standalone:
+            if p.get("is_playing"):
+                app_id = p.get("app_id", "").lower()
+                if "vlc" in app_id:
+                    if not playing_vlc:
+                        playing_vlc = p
+                else:
+                    if not playing_other:
+                        playing_other = p
+
+        # Evaluate strict priority: Spotify -> YouTube -> VLC -> Other
+        if playing_spotify:
+            return playing_spotify
+        if playing_youtube:
+            return playing_youtube
+        if playing_vlc:
+            return playing_vlc
+        if playing_other:
+            return playing_other
+
+        # Nothing is playing -> return None!
         return None
 
     async def _poll_sessions_list(self) -> None:
