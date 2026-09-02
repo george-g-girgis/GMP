@@ -45,16 +45,18 @@ def get_process_name_for_pid(pid: int) -> str:
 
 
 def find_media_window(app_id: str, title: str = "") -> int | None:
-    """Locate the top-level visible window HWND for the active media source."""
+    """Locate the top-level window HWND for the active media source."""
     if not app_id and not title:
         return None
     try:
+        import re
         hdesk = user32.OpenInputDesktop(0, False, 0x0100)
         if not hdesk:
             return None
 
         app_token = os.path.splitext(os.path.basename(app_id))[0].lower() if app_id else ""
         title_lower = title.lower() if title else ""
+        keywords = [k for k in re.findall(r"[\w\d]+", title_lower) if len(k) >= 3]
 
         best_hwnd = None
         fallback_hwnd = None
@@ -62,8 +64,9 @@ def find_media_window(app_id: str, title: str = "") -> int | None:
 
         def cb(hwnd, _):
             nonlocal best_hwnd, fallback_hwnd
-            if not user32.IsWindowVisible(hwnd) or user32.IsIconic(hwnd):
+            if not user32.IsWindow(hwnd):
                 return 1
+
             buf = ctypes.create_unicode_buffer(512)
             user32.GetWindowTextW(hwnd, buf, 512)
             w_title = buf.value.lower()
@@ -75,20 +78,44 @@ def find_media_window(app_id: str, title: str = "") -> int | None:
             user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
             pname = get_process_name_for_pid(pid.value)
 
-            # Match exact track/video title in window title
-            if title_lower and title_lower in w_title:
+            # Match title
+            title_match = False
+            if title_lower and (title_lower in w_title or w_title in title_lower):
+                title_match = True
+            elif keywords:
+                matches = sum(1 for kw in keywords if kw in w_title)
+                if matches >= 2 or (len(keywords) == 1 and matches == 1):
+                    title_match = True
+
+            # Match app
+            app_match = False
+            if app_token and (app_token in pname or app_token in w_title):
+                app_match = True
+            if "vlc" in app_token or "vlc" in pname or "vlc media player" in w_title:
+                app_match = True
+
+            if title_match and app_match:
                 best_hwnd = hwnd
                 return 0
-
-            # Match app token in process name or window title
-            if app_token and (app_token in pname or app_token in w_title):
-                if not fallback_hwnd:
-                    fallback_hwnd = hwnd
+            if title_match and not best_hwnd:
+                best_hwnd = hwnd
+            if app_match and not fallback_hwnd:
+                fallback_hwnd = hwnd
             return 1
 
         user32.EnumDesktopWindows(hdesk, WNDENUMPROC(cb), 0)
         user32.CloseDesktop(hdesk)
-        return best_hwnd or fallback_hwnd
+
+        target = best_hwnd or fallback_hwnd
+        if target:
+            # If minimized, restore without activating to allow DWM to capture its buffer
+            if user32.IsIconic(target):
+                SW_SHOWNOACTIVATE = 4
+                user32.ShowWindow(target, SW_SHOWNOACTIVATE)
+                HWND_BOTTOM = 1
+                user32.SetWindowPos(target, HWND_BOTTOM, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
+
+        return target
     except Exception as exc:
         log.debug("find_media_window failed: %s", exc)
         return None
@@ -570,7 +597,7 @@ class MediaController(QObject):
         self._lyrics_fetcher.lyrics_ready.connect(self._on_lyrics_ready)
 
         from core.captions import AutoCaptionEngine
-        self._caption_engine = AutoCaptionEngine(self)
+        self._caption_engine = AutoCaptionEngine(self._cfg, self)
         self._caption_engine.caption_ready.connect(self.caption_ready.emit)
 
         self._is_playing = False
@@ -603,25 +630,36 @@ class MediaController(QObject):
         self._thread.wait(2000)
         log.info("MediaController stopped")
 
+    def _update_caption_state(self) -> None:
+        if not self._is_playing:
+            self._caption_engine.stop()
+            return
+
+        mode = self._cfg.get("captions_mode", "auto") if self._cfg else "auto"
+        if mode == "disabled":
+            self._caption_engine.stop()
+        elif mode == "speech_only":
+            self._caption_engine.start()
+        elif mode == "lrclib_only":
+            self._caption_engine.stop()
+        else:  # "auto"
+            if self._has_synced_lyrics:
+                self._caption_engine.stop()
+            else:
+                self._caption_engine.start()
+
     def _on_playback_state_changed(self, is_playing: bool) -> None:
         self._is_playing = is_playing
         self.playback_changed.emit(is_playing)
-        if not is_playing:
-            self._caption_engine.stop()
-        elif not self._has_synced_lyrics:
-            self._caption_engine.start()
+        self._update_caption_state()
 
     def _on_lyrics_ready(self, lyrics: list) -> None:
         self.lyrics_changed.emit(lyrics)
-        if lyrics:
-            self._has_synced_lyrics = True
-            self._caption_engine.stop()
-        else:
-            self._has_synced_lyrics = False
-            if self._is_playing:
-                self._caption_engine.start()
+        self._has_synced_lyrics = bool(lyrics)
+        self._update_caption_state()
 
     def _on_session_lost(self) -> None:
+        self._is_playing = False
         self._caption_engine.stop()
         self.session_lost.emit()
 

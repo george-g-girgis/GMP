@@ -31,11 +31,13 @@ class _CaptionWorker(QObject):
     caption_ready = pyqtSignal(str, str)  # (text, detected_language)
     status_changed = pyqtSignal(str)      # (status message)
 
-    def __init__(self) -> None:
+    def __init__(self, cfg: Any = None) -> None:
         super().__init__()
+        self._cfg = cfg
         self._running = False
         self._active = False
         self._model = None
+        self._model_name = ""
         self._lock = threading.Lock()
 
     def start_captions(self) -> None:
@@ -69,45 +71,52 @@ class _CaptionWorker(QObject):
         log.info("AutoCaption worker stopped")
 
     def _ensure_model(self) -> None:
-        if self._model is None:
-            self.status_changed.emit("Loading speech AI model…")
+        target_model = self._cfg.get("captions_whisper_model", "tiny") if self._cfg else "tiny"
+        if self._model is None or self._model_name != target_model:
+            self.status_changed.emit(f"Loading Whisper AI ({target_model})…")
             from faster_whisper import WhisperModel
-            # cpu int8 for low memory and real-time inference
-            self._model = WhisperModel(_MODEL_NAME, device="cpu", compute_type="int8")
+            self._model = WhisperModel(target_model, device="cpu", compute_type="int8")
+            self._model_name = target_model
             self.status_changed.emit("Speech AI ready")
-            log.info("Whisper '%s' model loaded successfully", _MODEL_NAME)
+            log.info("Whisper '%s' model loaded successfully", target_model)
 
     def _record_and_transcribe(self) -> None:
         import soundcard as sc
 
         speaker = sc.default_speaker()
+        loopback_mic = sc.get_microphone(id=str(speaker.name), include_loopback=True)
         num_frames = int(_SAMPLE_RATE * _CHUNK_SECONDS)
 
-        with speaker.recorder(samplerate=_SAMPLE_RATE, channels=1) as mic:
+        with loopback_mic.recorder(samplerate=_SAMPLE_RATE, channels=1) as mic:
             while self._running and self._active:
                 data = mic.record(numframes=num_frames)
-                # Convert (N, 1) float to 1D float32 array
                 audio_1d = data.squeeze().astype(np.float32)
 
                 # Check energy/RMS: skip silent frames
                 rms = np.sqrt(np.mean(audio_1d**2))
-                if rms < 0.008:
+                if rms < 0.005:
                     continue
 
                 if not self._active or not self._running:
                     break
 
-                # Transcribe with automatic language detection (language=None)
+                # Determine language
+                lang_mode = self._cfg.get("captions_lang_mode", "auto") if self._cfg else "auto"
+                target_lang = None
+                if lang_mode == "manual":
+                    target_lang = self._cfg.get("captions_manual_lang", "en") if self._cfg else "en"
+
+                # Transcribe
                 segments, info = self._model.transcribe(
                     audio_1d,
-                    language=None,
+                    language=target_lang,
                     beam_size=1,
                     best_of=1,
                     temperature=0.0,
                     condition_on_previous_text=False,
                 )
 
-                detected_lang = info.language.upper() if info and info.language else "AUTO"
+                detected_lang = info.language.upper() if info and info.language else (target_lang.upper() if target_lang else "AUTO")
                 collected_text = " ".join(s.text.strip() for s in segments if s.text.strip())
 
                 if collected_text:
@@ -120,10 +129,11 @@ class AutoCaptionEngine(QObject):
     caption_ready = pyqtSignal(str, str)  # (text, detected_language)
     status_changed = pyqtSignal(str)
 
-    def __init__(self, parent: QObject | None = None) -> None:
+    def __init__(self, cfg: Any = None, parent: QObject | None = None) -> None:
         super().__init__(parent)
+        self._cfg = cfg
         self._thread = QThread()
-        self._worker = _CaptionWorker()
+        self._worker = _CaptionWorker(cfg)
         self._worker.moveToThread(self._thread)
 
         self._thread.started.connect(self._worker.run)
@@ -141,4 +151,4 @@ class AutoCaptionEngine(QObject):
     def shutdown(self) -> None:
         self._worker.shutdown()
         self._thread.quit()
-        self._thread.wait(1500)
+        self._thread.wait(2000)

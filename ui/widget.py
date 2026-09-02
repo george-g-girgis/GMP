@@ -61,6 +61,23 @@ class DWM_THUMBNAIL_PROPERTIES(ctypes.Structure):
     ]
 
 
+# 64-bit ctypes prototypes for DWM functions
+dwmapi.DwmRegisterThumbnail.argtypes = [
+    wintypes.HWND,
+    wintypes.HWND,
+    ctypes.POINTER(wintypes.HANDLE),
+]
+dwmapi.DwmRegisterThumbnail.restype = ctypes.c_long
+
+dwmapi.DwmUpdateThumbnailProperties.argtypes = [
+    wintypes.HANDLE,
+    ctypes.POINTER(DWM_THUMBNAIL_PROPERTIES),
+]
+dwmapi.DwmUpdateThumbnailProperties.restype = ctypes.c_long
+
+dwmapi.DwmUnregisterThumbnail.argtypes = [wintypes.HANDLE]
+dwmapi.DwmUnregisterThumbnail.restype = ctypes.c_long
+
 DWM_TNP_RECTDESTINATION = 0x00000001
 DWM_TNP_OPACITY = 0x00000004
 DWM_TNP_VISIBLE = 0x00000008
@@ -728,10 +745,17 @@ class PlayerWidget(QWidget):
             self._video_hwnd = hwnd
             try:
                 thumb = wintypes.HANDLE()
-                hr = dwmapi.DwmRegisterThumbnail(top_hwnd, hwnd, ctypes.byref(thumb))
+                hr = dwmapi.DwmRegisterThumbnail(
+                    wintypes.HWND(top_hwnd),
+                    wintypes.HWND(hwnd),
+                    ctypes.byref(thumb),
+                )
                 if hr == 0:
                     self._video_thumb_id = thumb.value
                     self._update_thumbnail_rect()
+                    log.info("DWM video mirror active (thumb=%s, hwnd=%s)", thumb.value, hex(hwnd))
+                else:
+                    log.debug("DwmRegisterThumbnail failed with hr=0x%08x", hr & 0xffffffff)
             except Exception as e:
                 log.debug("Failed to register DWM thumbnail: %s", e)
 
@@ -745,7 +769,7 @@ class PlayerWidget(QWidget):
     def _disable_video_mode(self) -> None:
         if self._video_thumb_id:
             try:
-                dwmapi.DwmUnregisterThumbnail(self._video_thumb_id)
+                dwmapi.DwmUnregisterThumbnail(wintypes.HANDLE(self._video_thumb_id))
             except Exception:
                 pass
             self._video_thumb_id = None
@@ -776,7 +800,10 @@ class PlayerWidget(QWidget):
                 props.opacity = 255
                 props.fVisible = True
                 props.fSourceClientAreaOnly = True
-                dwmapi.DwmUpdateThumbnailProperties(self._video_thumb_id, ctypes.byref(props))
+                dwmapi.DwmUpdateThumbnailProperties(
+                    wintypes.HANDLE(self._video_thumb_id),
+                    ctypes.byref(props),
+                )
             except Exception as e:
                 log.debug("Failed to update thumbnail rect: %s", e)
 
@@ -863,11 +890,15 @@ class PlayerWidget(QWidget):
         """Display live speech-to-text auto-generated captions."""
         if not getattr(self, "_lyrics_on", True):
             return
-        if self._lyrics:
-            # Synced lyrics from LrcLib take precedence
+        mode = self._cfg.get("captions_mode", "auto")
+        if mode == "disabled":
+            return
+        if self._lyrics and mode != "speech_only":
+            # Synced lyrics from LrcLib take precedence unless forced
             return
         if text:
-            badge = f"[{lang}] " if lang and lang != "AUTO" else ""
+            show_badge = self._cfg.get("captions_show_badge", True)
+            badge = f"[{lang}] " if (show_badge and lang and lang != "AUTO") else ""
             self._lyrics_lbl.show()
             self._lyrics_lbl.setText(f"{badge}{text}")
 

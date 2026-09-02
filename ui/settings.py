@@ -229,7 +229,7 @@ class SettingsWindow(QDialog):
         ico_file = Path(__file__).resolve().parent.parent / "assets" / "app.ico"
         if ico_file.exists():
             self.setWindowIcon(QIcon(str(ico_file)))
-        self.setFixedSize(570, 530)
+        self.setFixedSize(600, 560)
         self.setWindowFlags(
             Qt.WindowType.Dialog
             | Qt.WindowType.WindowCloseButtonHint
@@ -250,6 +250,7 @@ class SettingsWindow(QDialog):
         tabs.setFont(_font(12))
         tabs.addTab(self._build_appearance(), "Appearance")
         tabs.addTab(self._build_sources(), "Media Sources")
+        tabs.addTab(self._build_captions(), "Captions & AI")
         tabs.addTab(self._build_colors(), "Colors")
         tabs.addTab(self._build_depth(), "Depth Effect")
         tabs.addTab(self._build_playback(), "Playback")
@@ -537,6 +538,173 @@ class SettingsWindow(QDialog):
         if hasattr(self, "_manual_rb"):
             self._manual_rb.setChecked(True)
         self._populate_sources_ui(self._latest_sessions)
+
+    def _build_captions(self) -> QWidget:
+        """Captions & AI tab: auto vs manual speech recognition and lyrics configuration."""
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.setContentsMargins(20, 20, 20, 20)
+        v.setSpacing(14)
+
+        # ── Caption Source Mode ──
+        v.addWidget(self._section("Caption & Lyrics Engine Mode"))
+
+        mode_vbox = QVBoxLayout()
+        mode_vbox.setSpacing(8)
+
+        rb_auto = QRadioButton("Auto (Synced Lyrics + AI Speech Recognition Fallback)")
+        rb_auto.setFont(_font(11, True))
+        rb_auto.setStyleSheet(f"color: {_TEXT};")
+
+        rb_speech = QRadioButton("Force AI Live Captions (Transcribe desktop audio with Whisper)")
+        rb_speech.setFont(_font(11, True))
+        rb_speech.setStyleSheet(f"color: {_TEXT};")
+
+        rb_lrclib = QRadioButton("Synced Lyrics Only (LrcLib online database only)")
+        rb_lrclib.setFont(_font(11, True))
+        rb_lrclib.setStyleSheet(f"color: {_TEXT};")
+
+        rb_disabled = QRadioButton("Disabled (Turn off all lyrics and captions)")
+        rb_disabled.setFont(_font(11, True))
+        rb_disabled.setStyleSheet(f"color: {_TEXT};")
+
+        current_mode = self._cfg.get("captions_mode", "auto")
+        if current_mode == "speech_only":
+            rb_speech.setChecked(True)
+        elif current_mode == "lrclib_only":
+            rb_lrclib.setChecked(True)
+        elif current_mode == "disabled":
+            rb_disabled.setChecked(True)
+        else:
+            rb_auto.setChecked(True)
+
+        mode_vbox.addWidget(rb_auto)
+        mode_vbox.addWidget(rb_speech)
+        mode_vbox.addWidget(rb_lrclib)
+        mode_vbox.addWidget(rb_disabled)
+        v.addLayout(mode_vbox)
+
+        def _on_captions_mode_changed():
+            if rb_speech.isChecked():
+                m = "speech_only"
+            elif rb_lrclib.isChecked():
+                m = "lrclib_only"
+            elif rb_disabled.isChecked():
+                m = "disabled"
+            else:
+                m = "auto"
+            self._cfg.set("captions_mode", m)
+            if self._media:
+                self._media._update_caption_state()
+
+        rb_auto.toggled.connect(_on_captions_mode_changed)
+        rb_speech.toggled.connect(_on_captions_mode_changed)
+        rb_lrclib.toggled.connect(_on_captions_mode_changed)
+        rb_disabled.toggled.connect(_on_captions_mode_changed)
+
+        # ── Language Detection & Selection ──
+        v.addWidget(self._section("Spoken Language Detection"))
+
+        lang_group = QVBoxLayout()
+        lang_group.setSpacing(8)
+
+        lang_auto_rb = QRadioButton("Auto-Detect Language (Multilingual, YouTube style)")
+        lang_auto_rb.setFont(_font(11, True))
+        lang_auto_rb.setStyleSheet(f"color: {_TEXT};")
+
+        lang_manual_rb = QRadioButton("Choose Language Manually:")
+        lang_manual_rb.setFont(_font(11, True))
+        lang_manual_rb.setStyleSheet(f"color: {_TEXT};")
+
+        current_lang_mode = self._cfg.get("captions_lang_mode", "auto")
+        if current_lang_mode == "manual":
+            lang_manual_rb.setChecked(True)
+        else:
+            lang_auto_rb.setChecked(True)
+
+        lang_group.addWidget(lang_auto_rb)
+
+        lang_row = QHBoxLayout()
+        lang_row.setSpacing(10)
+        lang_row.addWidget(lang_manual_rb)
+
+        lang_combo = QComboBox()
+        lang_combo.setFont(_font(11))
+        lang_options = [
+            ("English", "en"),
+            ("Arabic (العربية)", "ar"),
+            ("Spanish (Español)", "es"),
+            ("French (Français)", "fr"),
+            ("German (Deutsch)", "de"),
+            ("Japanese (日本語)", "ja"),
+            ("Korean (한국어)", "ko"),
+            ("Chinese (中文)", "zh"),
+            ("Italian (Italiano)", "it"),
+            ("Russian (Русский)", "ru"),
+            ("Portuguese (Português)", "pt"),
+            ("Turkish (Türkçe)", "tr"),
+            ("Hindi (हिन्दी)", "hi"),
+        ]
+        for name, code in lang_options:
+            lang_combo.addItem(name, code)
+
+        current_lang_code = self._cfg.get("captions_manual_lang", "en")
+        for i in range(lang_combo.count()):
+            if lang_combo.itemData(i) == current_lang_code:
+                lang_combo.setCurrentIndex(i)
+                break
+
+        lang_combo.setEnabled(current_lang_mode == "manual")
+        lang_row.addWidget(lang_combo)
+        lang_row.addStretch()
+        lang_group.addLayout(lang_row)
+        v.addLayout(lang_group)
+
+        def _on_lang_mode_changed():
+            manual = lang_manual_rb.isChecked()
+            lang_combo.setEnabled(manual)
+            self._cfg.set("captions_lang_mode", "manual" if manual else "auto")
+
+        lang_auto_rb.toggled.connect(_on_lang_mode_changed)
+        lang_manual_rb.toggled.connect(_on_lang_mode_changed)
+        lang_combo.currentIndexChanged.connect(
+            lambda idx: self._cfg.set("captions_manual_lang", lang_combo.itemData(idx))
+        )
+
+        # ── AI Model & Badge ──
+        v.addWidget(self._section("Whisper AI Model & Display"))
+
+        model_row = QHBoxLayout()
+        model_row.setSpacing(12)
+        model_lbl = QLabel("Whisper AI Model:")
+        model_lbl.setFont(_font(11))
+        model_lbl.setStyleSheet(f"color: {_TEXT};")
+        model_row.addWidget(model_lbl)
+
+        model_combo = QComboBox()
+        model_combo.setFont(_font(11))
+        model_combo.addItem("Tiny (~75 MB, ultra-fast, low CPU)", "tiny")
+        model_combo.addItem("Base (~140 MB, higher accuracy)", "base")
+
+        cur_model = self._cfg.get("captions_whisper_model", "tiny")
+        for i in range(model_combo.count()):
+            if model_combo.itemData(i) == cur_model:
+                model_combo.setCurrentIndex(i)
+                break
+        model_combo.currentIndexChanged.connect(
+            lambda idx: self._cfg.set("captions_whisper_model", model_combo.itemData(idx))
+        )
+        model_row.addWidget(model_combo)
+        model_row.addStretch()
+        v.addLayout(model_row)
+
+        badge_cb = QCheckBox("Show Language Tag Badge (e.g. [EN], [AR])")
+        badge_cb.setChecked(self._cfg.get("captions_show_badge", True))
+        badge_cb.toggled.connect(lambda val: self._cfg.set("captions_show_badge", val))
+        v.addWidget(badge_cb)
+
+        v.addStretch()
+        return w
 
     def _build_colors(self) -> QWidget:
         """Colors tab: lyrics color, background color, glow color, auto-theme."""
