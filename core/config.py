@@ -55,7 +55,7 @@ DEFAULTS: dict[str, Any] = {
     "captions_mode": "auto",           # "auto" | "speech_only" | "lrclib_only" | "disabled"
     "captions_lang_mode": "auto",      # "auto" | "manual"
     "captions_manual_lang": "en",      # language code when in manual mode
-    "captions_whisper_model": "base",  # "base" | "small"
+    "captions_whisper_model": "tiny",  # "tiny" | "distil-small.en" | "base" | "small"
     "captions_show_badge": True,       # show language tag [EN], [AR], etc.
     # startup / system
     "autostart": False,

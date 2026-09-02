@@ -85,6 +85,25 @@ def _find_workerw() -> int | None:
     return result
 
 
+def _fit_to_screen(px: QPixmap, target_size: QSize) -> QPixmap:
+    """
+    Scale and center-crop pixmap to match Windows 11 default desktop wallpaper
+    rendering (WallpaperStyle: 10 / Fill) with 100% pixel-perfect alignment.
+    """
+    if px.isNull() or target_size.isEmpty():
+        return px
+    scaled = px.scaled(
+        target_size,
+        Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+    if scaled.size() == target_size:
+        return scaled
+    cx = max(0, (scaled.width() - target_size.width()) // 2)
+    cy = max(0, (scaled.height() - target_size.height()) // 2)
+    return scaled.copy(cx, cy, target_size.width(), target_size.height())
+
+
 # ─────────────────────────────────────────────────────────────────────
 #  Overlay Window
 # ─────────────────────────────────────────────────────────────────────
@@ -203,9 +222,15 @@ class OverlayWindow(QWidget):
             self._refresh_blur()
 
     def set_wallpaper(self, px: QPixmap) -> None:
-        """Provide the raw wallpaper pixmap (for blur-background capture)."""
-        self._wp_px = px
-        if not self._is_floating:
+        """Provide the wallpaper pixmap (fitted 1:1 to screen for blur-background capture)."""
+        if px is None or px.isNull():
+            self._wp_px = None
+            return
+
+        if self._is_floating:
+            self._wp_px = px
+        else:
+            self._wp_px = _fit_to_screen(px, self._scr)
             self._refresh_blur()
 
     def set_foreground(self, px: QPixmap) -> None:
@@ -218,12 +243,8 @@ class OverlayWindow(QWidget):
             self._fg.clear()
             return
 
-        # Scale to exact screen resolution — critical for pixel alignment
-        scaled = px.scaled(
-            self._scr,
-            Qt.AspectRatioMode.IgnoreAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
+        # Scale and align matching Windows 11 wallpaper geometry
+        scaled = _fit_to_screen(px, self._scr)
         self._fg_px = scaled
         self._fg.setPixmap(scaled)
         self._fg.raise_()
