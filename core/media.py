@@ -23,6 +23,49 @@ from PIL import Image
 from PyQt6.QtCore import QObject, QThread, pyqtSignal
 from PyQt6.QtGui import QImage, QPixmap
 
+import ctypes
+from ctypes import wintypes
+import os
+
+user32 = ctypes.windll.user32
+
+
+def find_media_window(app_id: str, title: str = "") -> int | None:
+    """Locate the top-level visible window HWND for the active media source."""
+    if not app_id and not title:
+        return None
+    try:
+        hdesk = user32.OpenInputDesktop(0, False, 0x0100)
+        if not hdesk:
+            return None
+
+        app_token = os.path.splitext(os.path.basename(app_id))[0].lower() if app_id else ""
+        title_lower = title.lower() if title else ""
+
+        best_hwnd = None
+        WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+        def cb(hwnd, _):
+            nonlocal best_hwnd
+            if not user32.IsWindowVisible(hwnd):
+                return 1
+            buf = ctypes.create_unicode_buffer(512)
+            user32.GetWindowTextW(hwnd, buf, 512)
+            txt = buf.value.lower()
+            if title_lower and title_lower in txt:
+                best_hwnd = hwnd
+                return 0
+            if app_token and app_token in txt and not best_hwnd:
+                best_hwnd = hwnd
+            return 1
+
+        user32.EnumDesktopWindows(hdesk, WNDENUMPROC(cb), 0)
+        user32.CloseDesktop(hdesk)
+        return best_hwnd
+    except Exception as exc:
+        log.debug("find_media_window failed: %s", exc)
+        return None
+
 log = logging.getLogger(__name__)
 
 _PLAYING = 4
@@ -233,6 +276,16 @@ class _MediaWorker(QObject):
                 except Exception as e:
                     log.error("Failed to read shuffle/repeat: %s", e)
 
+            # Check if playing video
+            is_video = False
+            source_hwnd = None
+            try:
+                if props.playback_type is not None and int(props.playback_type) == 2:
+                    is_video = True
+                    source_hwnd = find_media_window(session.source_app_user_model_id, props.title or "")
+            except Exception:
+                pass
+
             # 1. EMIT INSTANTLY (without album art) to prevent UI freezing
             info = {
                 "title": props.title or "Unknown",
@@ -241,9 +294,11 @@ class _MediaWorker(QObject):
                 "art": None,
                 "shuffle": shuff,
                 "repeat": rep,
+                "is_video": is_video,
+                "source_hwnd": source_hwnd,
             }
             self.track_changed.emit(info)
-            log.info("Track → %s — %s", props.artist, props.title)
+            log.info("Track → %s — %s (video=%s, hwnd=%s)", props.artist, props.title, is_video, hex(source_hwnd) if source_hwnd else "None")
 
             # 2. FETCH THUMBNAIL CONCURRENTLY (Does not block subsequent _poll_slow calls)
             async def _fetch_and_emit():
@@ -346,6 +401,7 @@ class MediaController(QObject):
 
     track_changed = pyqtSignal(dict)
     lyrics_changed = pyqtSignal(list)
+    caption_ready = pyqtSignal(str, str)  # (text, detected_language)
     playback_changed = pyqtSignal(bool)
     position_changed = pyqtSignal(float, float)
     session_lost = pyqtSignal()
@@ -358,18 +414,25 @@ class MediaController(QObject):
         self._thread = QThread()
         self._worker = _MediaWorker(poll_ms)
         self._worker.moveToThread(self._thread)
-        
+
         from core.lyrics import LyricsFetcher
         self._lyrics_fetcher = LyricsFetcher(self)
-        self._lyrics_fetcher.lyrics_ready.connect(self.lyrics_changed.emit)
+        self._lyrics_fetcher.lyrics_ready.connect(self._on_lyrics_ready)
+
+        from core.captions import AutoCaptionEngine
+        self._caption_engine = AutoCaptionEngine(self)
+        self._caption_engine.caption_ready.connect(self.caption_ready.emit)
+
+        self._is_playing = False
+        self._has_synced_lyrics = False
 
         self._thread.started.connect(self._worker.run)
-        
+
         # Connect signals
         self._worker.track_changed.connect(self._on_track_changed)
-        self._worker.playback_changed.connect(self.playback_changed.emit)
+        self._worker.playback_changed.connect(self._on_playback_state_changed)
         self._worker.position_changed.connect(self.position_changed.emit)
-        self._worker.session_lost.connect(self.session_lost.emit)
+        self._worker.session_lost.connect(self._on_session_lost)
         self._worker.shuffle_changed.connect(self.shuffle_changed.emit)
         self._worker.repeat_changed.connect(self.repeat_changed.emit)
         self._worker.auth_failed.connect(self.auth_failed.emit)
@@ -381,9 +444,32 @@ class MediaController(QObject):
     def stop(self) -> None:
         self._worker.stop()
         self._lyrics_fetcher.stop()
+        self._caption_engine.shutdown()
         self._thread.quit()
         self._thread.wait(2000)
         log.info("MediaController stopped")
+
+    def _on_playback_state_changed(self, is_playing: bool) -> None:
+        self._is_playing = is_playing
+        self.playback_changed.emit(is_playing)
+        if not is_playing:
+            self._caption_engine.stop()
+        elif not self._has_synced_lyrics:
+            self._caption_engine.start()
+
+    def _on_lyrics_ready(self, lyrics: list) -> None:
+        self.lyrics_changed.emit(lyrics)
+        if lyrics:
+            self._has_synced_lyrics = True
+            self._caption_engine.stop()
+        else:
+            self._has_synced_lyrics = False
+            if self._is_playing:
+                self._caption_engine.start()
+
+    def _on_session_lost(self) -> None:
+        self._caption_engine.stop()
+        self.session_lost.emit()
 
     def play_pause(self) -> None:
         self._worker.trigger_play_pause()

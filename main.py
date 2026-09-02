@@ -142,6 +142,7 @@ class App:
         # media → player
         self._media.track_changed.connect(p.set_track)
         self._media.lyrics_changed.connect(p.set_lyrics)
+        self._media.caption_ready.connect(p.set_caption)
         self._media.playback_changed.connect(p.set_playing)
         self._media.position_changed.connect(p.set_position)
         self._media.session_lost.connect(p.set_idle)

@@ -8,3 +8,5 @@ winrt-Windows.Media.Control
 winrt-Windows.Foundation
 winrt-Windows.Storage.Streams
 winrt-Windows.Media
+soundcard
+faster-whisper

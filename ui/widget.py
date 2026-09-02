@@ -38,7 +38,33 @@ from PyQt6.QtWidgets import (
     QSlider,
     QVBoxLayout,
     QWidget,
+    QGraphicsOpacityEffect,
 )
+
+import ctypes
+from ctypes import wintypes
+import logging
+
+log = logging.getLogger(__name__)
+
+dwmapi = ctypes.windll.dwmapi
+
+
+class DWM_THUMBNAIL_PROPERTIES(ctypes.Structure):
+    _fields_ = [
+        ("dwFlags", wintypes.DWORD),
+        ("rcDestination", wintypes.RECT),
+        ("rcSource", wintypes.RECT),
+        ("opacity", ctypes.c_ubyte),
+        ("fVisible", wintypes.BOOL),
+        ("fSourceClientAreaOnly", wintypes.BOOL),
+    ]
+
+
+DWM_TNP_RECTDESTINATION = 0x00000001
+DWM_TNP_OPACITY = 0x00000004
+DWM_TNP_VISIBLE = 0x00000008
+DWM_TNP_SOURCECLIENTAREAONLY = 0x00000010
 
 # ── Curated colour palette (defaults) ────────────────────────────────
 _BORDER = QColor(255, 255, 255, 45)
@@ -330,6 +356,21 @@ class PlayerWidget(QWidget):
         self._seek_cooldown.setSingleShot(True)
         self._seek_cooldown.setInterval(400)
 
+        # Video mode & DWM live mirror state
+        self._video_thumb_id: int | None = None
+        self._is_video_mode: bool = False
+        self._video_hwnd: int | None = None
+        self._is_hovered: bool = False
+
+        self._hover_timer = QTimer(self)
+        self._hover_timer.setSingleShot(True)
+        self._hover_timer.timeout.connect(self._on_hover_timeout)
+
+        # Live top-right date and time ticker
+        self._datetime_timer = QTimer(self)
+        self._datetime_timer.setInterval(1000)
+        self._datetime_timer.timeout.connect(self._update_datetime)
+
         self._build()
         self._apply_cfg()
         self._apply_colors()
@@ -386,15 +427,32 @@ class PlayerWidget(QWidget):
                                max(0, bg.blue() - 18), min(255, a + 25))
 
     def _build(self) -> None:
+        self.setMouseTracking(True)
         root = QVBoxLayout(self)
-        root.setContentsMargins(20 + 25, 20 + 25, 20 + 25, 20 + 25)
-        root.setSpacing(12)
+        root.setContentsMargins(25, 25, 25, 25)
+        root.setSpacing(0)
 
-        # ── top row (art + text) ──
+        # ── interactive UI container (supports video-mode hover opacity animation) ──
+        self._ui_container = QWidget(self)
+        self._ui_container.setMouseTracking(True)
+        self._ui_opacity = QGraphicsOpacityEffect(self._ui_container)
+        self._ui_container.setGraphicsEffect(self._ui_opacity)
+
+        self._ui_anim = QVariantAnimation(self)
+        self._ui_anim.setDuration(220)
+        self._ui_anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        self._ui_anim.valueChanged.connect(self._ui_opacity.setOpacity)
+
+        ui_layout = QVBoxLayout(self._ui_container)
+        ui_layout.setContentsMargins(20, 20, 20, 20)
+        ui_layout.setSpacing(12)
+        root.addWidget(self._ui_container)
+
+        # ── top row (art + text + top-right date/time) ──
         top = QHBoxLayout()
         top.setSpacing(16)
 
-        self._art = QLabel(self)
+        self._art = QLabel(self._ui_container)
         self._art.setFixedSize(68, 68)
         self._art.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._art.setStyleSheet("border-radius:12px;background:rgba(255,255,255,0.05);")
@@ -408,7 +466,7 @@ class PlayerWidget(QWidget):
         self._title = _ElidedLabel("No Media Playing")
         self._title.setFont(_font(14, True))
         self._title.setStyleSheet(f"color:{_TEXT.name()};background:transparent;")
-        self._title.setMinimumWidth(150)
+        self._title.setMinimumWidth(130)
 
         self._artist = _ElidedLabel("Play something to get started")
         self._artist.setFont(_font(11))
@@ -434,10 +492,31 @@ class PlayerWidget(QWidget):
 
         top.addLayout(txt)
         top.addStretch()
-        root.addLayout(top)
+
+        # ── top right clock & date ──
+        datetime_box = QVBoxLayout()
+        datetime_box.setSpacing(1)
+        datetime_box.setContentsMargins(0, 2, 2, 0)
+        datetime_box.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+
+        self._clock_lbl = QLabel()
+        self._clock_lbl.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self._clock_lbl.setFont(_font(12, True))
+        self._clock_lbl.setStyleSheet("color:#ffffff;background:transparent;")
+
+        self._date_lbl = QLabel()
+        self._date_lbl.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self._date_lbl.setFont(_font(10))
+        self._date_lbl.setStyleSheet(f"color:rgba({_TEXT_DIM.red()},{_TEXT_DIM.green()},{_TEXT_DIM.blue()},0.85);background:transparent;")
+
+        datetime_box.addWidget(self._clock_lbl)
+        datetime_box.addWidget(self._date_lbl)
+        top.addLayout(datetime_box)
+
+        ui_layout.addLayout(top)
 
         # ── seek bar ──
-        self._slider = _JumpSlider(Qt.Orientation.Horizontal)
+        self._slider = _JumpSlider(Qt.Orientation.Horizontal, self._ui_container)
         self._slider.setRange(0, 1000)
         self._slider.setFixedHeight(16)
         self._slider.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -446,25 +525,25 @@ class PlayerWidget(QWidget):
         self._slider.scrubbing_moved.connect(self._on_scrub_move)
         self._slider.scrubbing_finished.connect(self._on_scrub_finish)
         
-        self._time = QLabel("0:00 / 0:00")
+        self._time = QLabel("0:00 / 0:00", self._ui_container)
         self._time.setFont(_font(10))
         self._time.setStyleSheet(f"color:{_TEXT_DIM.name()};background:transparent;")
         
         prg = QHBoxLayout()
         prg.addWidget(self._slider)
         prg.addWidget(self._time)
-        root.addLayout(prg)
+        ui_layout.addLayout(prg)
 
         # ── controls ──
         ctrl = QHBoxLayout()
         ctrl.setSpacing(8)
         ctrl.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        self._btn_shuffle = _IconButton("\uE8B1", 24, 12, self)
-        self._btn_prev = _IconButton("\uE892", 34, 14, self)
-        self._btn_play = _IconButton(_ICON_PLAY, 42, 18, self)
-        self._btn_next = _IconButton("\uE893", 34, 14, self)
-        self._btn_repeat = _IconButton("\uE8EE", 24, 12, self)
+        self._btn_shuffle = _IconButton("\uE8B1", 24, 12, self._ui_container)
+        self._btn_prev = _IconButton("\uE892", 34, 14, self._ui_container)
+        self._btn_play = _IconButton(_ICON_PLAY, 42, 18, self._ui_container)
+        self._btn_next = _IconButton("\uE893", 34, 14, self._ui_container)
+        self._btn_repeat = _IconButton("\uE8EE", 24, 12, self._ui_container)
 
         self._btn_next.clicked.connect(self.next_track.emit)
         self._btn_play.clicked.connect(self._on_play_clicked)
@@ -478,9 +557,13 @@ class PlayerWidget(QWidget):
         ctrl.addWidget(self._btn_next)
         ctrl.addWidget(self._btn_repeat)
         
-        root.addLayout(ctrl)
+        ui_layout.addLayout(ctrl)
         
         self._grip = _ResizeHandle(self)
+
+        # Set initial datetime and start timer
+        self._update_datetime()
+        self._datetime_timer.start()
 
         # Enable right-click context menu
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -559,7 +642,39 @@ class PlayerWidget(QWidget):
         locked = self._cfg.get("locked", False)
         self._grip.setVisible(not locked)
 
-    # ── window events ────────────────────────────────────────────────
+    def _update_datetime(self) -> None:
+        """Update top-right time and date according to the user's exact specification."""
+        from datetime import datetime
+        now = datetime.now()
+        ampm = "P.M." if now.hour >= 12 else "A.M."
+        h12 = now.hour % 12
+        if h12 == 0:
+            h12 = 12
+        time_str = f"{h12:02d}:{now.minute:02d} {ampm}"
+        month_str = now.strftime("%b")
+        year_str = now.strftime("%y")
+        date_str = f"{now.day}-{month_str}-{year_str}"
+
+        if hasattr(self, "_clock_lbl") and self._clock_lbl.text() != time_str:
+            self._clock_lbl.setText(time_str)
+        if hasattr(self, "_date_lbl") and self._date_lbl.text() != date_str:
+            self._date_lbl.setText(date_str)
+
+    # ── window & mouse events ────────────────────────────────────────
+    def enterEvent(self, e):
+        super().enterEvent(e)
+        self._is_hovered = True
+        if self._is_video_mode:
+            self._animate_ui_opacity(1.0)
+            if self._playing:
+                self._hover_timer.start(3000)
+
+    def leaveEvent(self, e):
+        super().leaveEvent(e)
+        self._is_hovered = False
+        if self._is_video_mode and self._playing and not self._is_scrubbing:
+            self._animate_ui_opacity(0.0)
+
     def mousePressEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton and not self._cfg["locked"]:
             self._drag_pos = e.globalPosition()
@@ -570,9 +685,81 @@ class PlayerWidget(QWidget):
             self.dragged.emit(int(delta.x()), int(delta.y()))
             self._drag_pos = e.globalPosition()
 
+        if self._is_video_mode:
+            if self._ui_opacity.opacity() < 0.95:
+                self._animate_ui_opacity(1.0)
+            if self._playing:
+                self._hover_timer.start(3000)
+
     def mouseReleaseEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
             self._drag_pos = None
+
+    def _animate_ui_opacity(self, target: float) -> None:
+        if hasattr(self, "_ui_anim"):
+            if self._ui_anim.state() == QVariantAnimation.State.Running:
+                self._ui_anim.stop()
+            self._ui_anim.setStartValue(self._ui_opacity.opacity())
+            self._ui_anim.setEndValue(target)
+            self._ui_anim.start()
+
+    def _on_hover_timeout(self) -> None:
+        if self._is_video_mode and self._playing and not self._is_scrubbing:
+            self._animate_ui_opacity(0.0)
+
+    # ── video mode DWM helpers ───────────────────────────────────────
+    def _enable_video_mode(self, hwnd: int) -> None:
+        if self._video_hwnd != hwnd:
+            self._disable_video_mode()
+            self._video_hwnd = hwnd
+            try:
+                thumb = wintypes.HANDLE()
+                hr = dwmapi.DwmRegisterThumbnail(int(self.winId()), hwnd, ctypes.byref(thumb))
+                if hr == 0:
+                    self._video_thumb_id = thumb.value
+                    self._update_thumbnail_rect()
+            except Exception as e:
+                log.debug("Failed to register DWM thumbnail: %s", e)
+
+        self._is_video_mode = True
+        if self._playing and not self._is_hovered:
+            self._animate_ui_opacity(0.0)
+
+    def _disable_video_mode(self) -> None:
+        if self._video_thumb_id:
+            try:
+                dwmapi.DwmUnregisterThumbnail(self._video_thumb_id)
+            except Exception:
+                pass
+            self._video_thumb_id = None
+        self._video_hwnd = None
+        self._is_video_mode = False
+        self._animate_ui_opacity(1.0)
+        self.update()
+
+    def _update_thumbnail_rect(self) -> None:
+        if self._video_thumb_id:
+            try:
+                props = DWM_THUMBNAIL_PROPERTIES()
+                props.dwFlags = (
+                    DWM_TNP_RECTDESTINATION
+                    | DWM_TNP_VISIBLE
+                    | DWM_TNP_OPACITY
+                    | DWM_TNP_SOURCECLIENTAREAONLY
+                )
+                margin = 25
+                props.rcDestination = wintypes.RECT(
+                    margin + 2,
+                    margin + 2,
+                    self.width() - margin - 2,
+                    self.height() - margin - 2,
+                )
+                props.opacity = 255
+                props.fVisible = True
+                props.fSourceClientAreaOnly = True
+                dwmapi.DwmUpdateThumbnailProperties(self._video_thumb_id, ctypes.byref(props))
+            except Exception as e:
+                log.debug("Failed to update thumbnail rect: %s", e)
 
     def resizeEvent(self, e) -> None:
         super().resizeEvent(e)
@@ -593,6 +780,14 @@ class PlayerWidget(QWidget):
         self._album.setFont(_font(int(10 * s)))
         self._lyrics_lbl.setFont(_font(int(11 * s), True))
         self._time.setFont(_font(int(10 * s)))
+
+        if hasattr(self, "_clock_lbl"):
+            self._clock_lbl.setFont(_font(int(12 * s), True))
+        if hasattr(self, "_date_lbl"):
+            self._date_lbl.setFont(_font(int(10 * s)))
+
+        if self._is_video_mode:
+            self._update_thumbnail_rect()
         
         new_art_sz = int(68 * s)
         old_art_sz = self._art.width()
@@ -637,6 +832,26 @@ class PlayerWidget(QWidget):
         self.set_shuffle(info.get("shuffle", False))
         self.set_repeat(info.get("repeat", 0))
 
+        # Video mode handling
+        is_video = bool(info.get("is_video", False))
+        source_hwnd = info.get("source_hwnd")
+        if is_video and source_hwnd:
+            self._enable_video_mode(source_hwnd)
+        else:
+            self._disable_video_mode()
+
+    def set_caption(self, text: str, lang: str = "AUTO") -> None:
+        """Display live speech-to-text auto-generated captions."""
+        if not getattr(self, "_lyrics_on", True):
+            return
+        if self._lyrics:
+            # Synced lyrics from LrcLib take precedence
+            return
+        if text:
+            badge = f"[{lang}] " if lang and lang != "AUTO" else ""
+            self._lyrics_lbl.show()
+            self._lyrics_lbl.setText(f"{badge}{text}")
+
     def set_shuffle(self, active: bool) -> None:
         self._btn_shuffle.set_active(active)
 
@@ -653,6 +868,7 @@ class PlayerWidget(QWidget):
         self.set_playing(False)
         self.set_position(0.0, 0.0)
         self.set_lyrics([])
+        self._disable_video_mode()
         
     def set_auth_failed(self) -> None:
         self._title.setText("Spotify API Keys Missing")
@@ -663,12 +879,18 @@ class PlayerWidget(QWidget):
         self.set_playing(False)
         self.set_position(0.0, 0.0)
         self.set_lyrics([])
+        self._disable_video_mode()
 
     def set_playing(self, playing: bool) -> None:
         playing = bool(playing)
         if self._playing != playing:
             self._playing = playing
             self._btn_play.set_icon_text(_ICON_PAUSE if playing else _ICON_PLAY)
+            if self._is_video_mode:
+                if playing and not self._is_hovered:
+                    self._animate_ui_opacity(0.0)
+                elif not playing:
+                    self._animate_ui_opacity(1.0)
 
     def _on_play_clicked(self) -> None:
         """Optimistic instant feedback when play/pause is clicked."""
@@ -776,6 +998,13 @@ class PlayerWidget(QWidget):
         p.setBrush(QBrush(g))
         p.setPen(Qt.PenStyle.NoPen)
         p.drawRoundedRect(rf, rad, rad)
+
+        # ── video mode dark tint when controls/datetime overlay is visible ──
+        if self._is_video_mode and getattr(self, "_ui_opacity", None) and self._ui_opacity.opacity() > 0.02:
+            dim_alpha = int(140 * self._ui_opacity.opacity())
+            p.setBrush(QBrush(QColor(0, 0, 0, dim_alpha)))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawRoundedRect(rf, rad, rad)
 
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.setPen(QPen(_BORDER, 1.2))
