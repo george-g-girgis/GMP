@@ -281,6 +281,12 @@ class _MediaWorker(QObject):
         except ImportError:
             log.error("winrt packages missing!")
 
+        # Initial slow poll so sessions and active track are populated immediately on startup
+        try:
+            await self._poll_slow()
+        except Exception as exc:
+            log.debug("Initial _poll_slow failed: %s", exc)
+
         while self._running:
             # Check for queued actions
             while not self._action_queue.empty():
@@ -447,14 +453,8 @@ class _MediaWorker(QObject):
 
     async def _poll_fast(self) -> None:
         try:
-            session = self._get_target_session()
-            self._active_session = session
-
+            session = self._active_session
             if session is None:
-                if self._has_session:
-                    self._has_session = False
-                    self._last_key = None
-                    self.session_lost.emit()
                 return
 
             self._has_session = True
@@ -520,6 +520,10 @@ class _MediaWorker(QObject):
             session = self._get_target_session()
             self._active_session = session
             if not session:
+                if self._has_session:
+                    self._has_session = False
+                    self._last_key = None
+                    self.session_lost.emit()
                 return
 
             await self._poll_sessions_list()
@@ -549,6 +553,52 @@ class _MediaWorker(QObject):
                 self.playback_changed.emit(session.get("is_playing", True))
                 log.info("Track (Standalone) → %s — %s (app=%s, hwnd=%s)", artist, title, app_id, hex(session.get("hwnd", 0)))
                 return
+
+            # 2. Windows GSMTC session handling (Spotify, YouTube on Edge/Chrome/Brave, etc.)
+            props = await session.try_get_media_properties_async()
+            if not props:
+                return
+
+            key = f"{props.title}|{props.artist}|{props.album_title}"
+            if key == self._last_key:
+                return
+            self._last_key = key
+
+            pb = session.get_playback_info()
+            shuff = False
+            rep = 0
+            if pb:
+                try:
+                    if hasattr(pb, 'is_shuffle_active') and pb.is_shuffle_active is not None:
+                        shuff = pb.is_shuffle_active
+                    if hasattr(pb, 'auto_repeat_mode') and pb.auto_repeat_mode is not None:
+                        rep = pb.auto_repeat_mode.value
+                except Exception as e:
+                    log.debug("Failed to read shuffle/repeat: %s", e)
+
+            # Detect video & find source HWND
+            is_video = False
+            ptype = getattr(props, "playback_type", None)
+            if ptype is not None and int(ptype) == 2:  # MediaPlaybackType.Video
+                is_video = True
+            app_id = (session.source_app_user_model_id or "").lower()
+            if any(b in app_id for b in ("chrome", "msedge", "brave", "firefox", "opera")):
+                if ptype == 2 or (props.title and (" - YouTube" in props.title or "YouTube" in props.title)):
+                    is_video = True
+
+            source_hwnd = find_media_window(session.source_app_user_model_id, props.title) if is_video else None
+
+            info = {
+                "title": props.title or "Unknown",
+                "artist": props.artist or "Unknown Artist",
+                "album": props.album_title or "",
+                "art": None,
+                "shuffle": shuff,
+                "repeat": rep,
+                "is_video": is_video,
+                "source_hwnd": source_hwnd,
+                "app_id": session.source_app_user_model_id,
+            }
             self.track_changed.emit(info)
             log.info("Track → %s — %s (app=%s, video=%s, hwnd=%s)", props.artist, props.title, session.source_app_user_model_id, is_video, hex(source_hwnd) if source_hwnd else "None")
 
