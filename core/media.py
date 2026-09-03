@@ -200,6 +200,44 @@ def scan_standalone_players() -> list[dict]:
 
 _PLAYING = 4
 
+_ALBUM_META_CACHE: dict[tuple[str, str], tuple[str, str]] = {}
+
+
+def _query_album_metadata_sync(title: str, artist: str) -> tuple[str, str]:
+    """Fetch release year and album name via iTunes Search API without blocking."""
+    key = (title.lower().strip(), artist.lower().strip())
+    if key in _ALBUM_META_CACHE:
+        return _ALBUM_META_CACHE[key]
+
+    import json
+    import re
+    import urllib.parse
+    import urllib.request
+
+    clean_t = re.sub(r"\s*[\(\[](?:feat\.|featuring|remaster(?:ed)?|live|edit|deluxe|bonus|version)[\s\S]*?[\)\]]", "", title, flags=re.IGNORECASE).strip()
+    term = f"{artist} {clean_t or title}".strip()
+    query = urllib.parse.urlencode({"term": term, "media": "music", "limit": 1})
+    url = f"https://itunes.apple.com/search?{query}"
+    req = urllib.request.Request(url, headers={"User-Agent": "GMP/2.0 (https://github.com/george-g-girgis/GMP)"})
+
+    try:
+        with urllib.request.urlopen(req, timeout=3.0) as res:
+            data = json.loads(res.read().decode("utf-8"))
+            results = data.get("results", [])
+            if results:
+                r = results[0]
+                rel = r.get("releaseDate", "")
+                year = rel[:4] if len(rel) >= 4 and rel[:4].isdigit() else ""
+                album = r.get("collectionName", "")
+                res_tuple = (year, album or "")
+                _ALBUM_META_CACHE[key] = res_tuple
+                return res_tuple
+    except Exception as e:
+        log.debug("Album metadata query failed for '%s - %s': %s", artist, title, e)
+
+    _ALBUM_META_CACHE[key] = ("", "")
+    return ("", "")
+
 
 class _MediaWorker(QObject):
     """Background worker that runs the asyncio event loop for media polling."""
@@ -227,6 +265,7 @@ class _MediaWorker(QObject):
         self._slow_tick = 0
         self._mgr = None
         self._active_session = None
+        self._current_info: dict | None = None
         
         # We queue actions to the asyncio loop
         self._action_queue: asyncio.Queue | None = None
@@ -670,6 +709,7 @@ class _MediaWorker(QObject):
                 "title": props.title or "Unknown",
                 "artist": props.artist or "Unknown Artist",
                 "album": props.album_title or "",
+                "year": "",
                 "art": None,
                 "shuffle": shuff,
                 "repeat": rep,
@@ -677,6 +717,7 @@ class _MediaWorker(QObject):
                 "source_hwnd": source_hwnd,
                 "app_id": session.source_app_user_model_id,
             }
+            self._current_info = info.copy()
             self.track_changed.emit(info)
             log.info("Track → %s — %s (app=%s, video=%s, hwnd=%s)", props.artist, props.title, session.source_app_user_model_id, is_video, hex(source_hwnd) if source_hwnd else "None")
 
@@ -684,14 +725,38 @@ class _MediaWorker(QObject):
             async def _fetch_and_emit():
                 try:
                     art_dict = await self._fetch_thumbnail(props)
-                    if art_dict:
-                        info_copy = info.copy()
-                        info_copy["art"] = art_dict
-                        self.track_changed.emit(info_copy)
+                    if art_dict and self._current_info is not None:
+                        self._current_info["art"] = art_dict
+                        self.track_changed.emit(self._current_info.copy())
                 except Exception:
                     log.error("Thumbnail task failed:\n%s", traceback.format_exc())
 
             asyncio.create_task(_fetch_and_emit())
+
+            # 3. FETCH ALBUM RELEASE YEAR CONCURRENTLY
+            async def _fetch_meta_and_emit():
+                try:
+                    t = info.get("title", "")
+                    a = info.get("artist", "")
+                    if t and t != "Unknown" and a and a != "Unknown Artist":
+                        loop = asyncio.get_running_loop()
+                        year, found_album = await loop.run_in_executor(None, _query_album_metadata_sync, t, a)
+                        if (year or found_album) and self._current_info is not None:
+                            if year:
+                                self._current_info["year"] = year
+                            cur_album = self._current_info.get("album", "") or found_album
+                            if year and cur_album and str(year) not in cur_album:
+                                self._current_info["album"] = f"{cur_album} ({year})"
+                            elif cur_album:
+                                self._current_info["album"] = cur_album
+                            elif year:
+                                self._current_info["album"] = f"({year})"
+                            self.track_changed.emit(self._current_info.copy())
+                            log.info("Album release metadata updated → %s", self._current_info.get("album"))
+                except Exception as exc:
+                    log.debug("Album release metadata task failed: %s", exc)
+
+            asyncio.create_task(_fetch_meta_and_emit())
 
         except ImportError as exc:
             log.error("winrt packages not available: %s", exc)
@@ -918,29 +983,33 @@ class MediaController(QObject):
         
     def _on_track_changed(self, info: dict) -> None:
         """Convert raw image bytes to QPixmap on the main thread (GUI thread)."""
-        art_dict = info.pop("art")
-        if art_dict:
-            try:
-                qi = QImage(
-                    art_dict["data"], art_dict["width"], art_dict["height"],
-                    art_dict["width"] * 4, QImage.Format.Format_RGBA8888,
-                )
-                info["art"] = QPixmap.fromImage(qi.copy())
-            except Exception as e:
-                log.error("Failed to create QPixmap: %s", e)
-        else:
-            info["art"] = None
-            
-        # Trigger lyrics fetch
         title = info.get("title", "")
         artist = info.get("artist", "")
         track_key = (title, artist)
         if getattr(self, "_last_fetched_key", None) != track_key:
             self._last_fetched_key = track_key
+            self._cached_pixmap = None
             if title and artist and title != "Unknown":
                 self.lyrics_changed.emit([])  # Clear lyrics immediately
                 self._lyrics_fetcher.fetch(title, artist)
             else:
                 self.lyrics_changed.emit([])
+
+        art_dict = info.pop("art", None)
+        if isinstance(art_dict, dict):
+            try:
+                qi = QImage(
+                    art_dict["data"], art_dict["width"], art_dict["height"],
+                    art_dict["width"] * 4, QImage.Format.Format_RGBA8888,
+                )
+                self._cached_pixmap = QPixmap.fromImage(qi.copy())
+                info["art"] = self._cached_pixmap
+            except Exception as e:
+                log.error("Failed to create QPixmap: %s", e)
+                info["art"] = None
+        elif isinstance(art_dict, QPixmap):
+            info["art"] = art_dict
+        else:
+            info["art"] = getattr(self, "_cached_pixmap", None)
 
         self.track_changed.emit(info)

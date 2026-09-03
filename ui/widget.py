@@ -122,24 +122,16 @@ def _font(size: int, bold: bool = False, family: str | None = None) -> QFont:
 
 
 class _ElidedLabel(QLabel):
+    """Full-text label with auto word-wrapping and full tooltip — never trims or clips."""
     def __init__(self, text: str = "", parent=None):
         super().__init__(text, parent)
-        self._cached_txt = ""
-        self._cached_w = 0
-        self._cached_elided = ""
+        self.setWordWrap(True)
+        if text:
+            self.setToolTip(text)
 
-    def paintEvent(self, e):
-        p = QPainter(self)
-        p.setPen(self.palette().windowText().color())
-        txt = self.text()
-        w = self.width()
-        if txt != self._cached_txt or w != self._cached_w:
-            self._cached_txt = txt
-            self._cached_w = w
-            metrics = QFontMetrics(self.font())
-            self._cached_elided = metrics.elidedText(txt, Qt.TextElideMode.ElideRight, w)
-        p.drawText(self.rect(), self.alignment(), self._cached_elided)
-        p.end()
+    def setText(self, text: str):
+        super().setText(text)
+        self.setToolTip(text)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -491,8 +483,7 @@ class PlayerWidget(QWidget):
         txt.addWidget(self._lyrics_lbl)
         txt.addStretch()
 
-        top.addLayout(txt)
-        top.addStretch()
+        top.addLayout(txt, 1)
 
         # ── top right clock & date ──
         datetime_box = QVBoxLayout()
@@ -757,7 +748,17 @@ class PlayerWidget(QWidget):
     def set_track(self, info: dict) -> None:
         self._title.setText(info.get("title", "Unknown"))
         self._artist.setText(info.get("artist", "Unknown Artist"))
-        self._album.setText(info.get("album", ""))
+
+        album = info.get("album", "")
+        year = info.get("year", "")
+        if year and str(year) not in album:
+            if album:
+                album_text = f"{album} ({year})"
+            else:
+                album_text = f"({year})"
+        else:
+            album_text = album
+        self._album.setText(album_text)
 
         art: QPixmap | None = info.get("art")
         if art and not art.isNull():
