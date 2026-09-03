@@ -536,6 +536,9 @@ class App:
 
 
     def _quit(self) -> None:
+        if getattr(self, "_stopping", False):
+            return
+        self._stopping = True
         self._watcher.stop()
         self._media.stop()
         self._cfg.save_now()  # flush any pending saves
@@ -594,14 +597,16 @@ def main() -> None:
     for _noisy in ("faster_whisper", "httpx", "ctranslate2", "soundcard"):
         logging.getLogger(_noisy).setLevel(logging.WARNING)
 
+    # Must be set BEFORE QApplication is created
+    QApplication.setHighDpiScaleFactorRoundingPolicy(
+        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+    )
+
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     app.setApplicationName("GMP — Glass Media Player")
     app.setApplicationVersion(VERSION)
     app.setWindowIcon(_make_icon())
-    app.setHighDpiScaleFactorRoundingPolicy(
-        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
-    )
 
     # Check for first run → show setup wizard
     cfg = ConfigManager()
