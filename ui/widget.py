@@ -680,13 +680,24 @@ class PlayerWidget(QWidget):
 
     def mousePressEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton and not self._cfg["locked"]:
-            self._drag_pos = e.globalPosition()
+            # Only start drag when clicking directly on the card background.
+            # If a child interactive widget (button, slider, grip) was hit,
+            # let the event propagate to it instead.
+            child = self.childAt(e.position().toPoint())
+            _interactive = (QPushButton, QSlider, _ResizeHandle)
+            if child is None or not isinstance(child, _interactive):
+                self._drag_pos = e.globalPosition()
+                return  # Consumed — this is a drag start on the background
+        super().mousePressEvent(e)
 
     def mouseMoveEvent(self, e):
         if self._drag_pos and not self._cfg["locked"]:
             delta = e.globalPosition() - self._drag_pos
             self.dragged.emit(int(delta.x()), int(delta.y()))
             self._drag_pos = e.globalPosition()
+            e.accept()
+            return
+        super().mouseMoveEvent(e)
 
     def mouseReleaseEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
