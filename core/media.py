@@ -27,6 +27,8 @@ import ctypes
 from ctypes import wintypes
 import os
 
+log = logging.getLogger(__name__)
+
 user32 = ctypes.windll.user32
 user32.IsWindow.argtypes = [wintypes.HWND]
 user32.IsWindow.restype = wintypes.BOOL
