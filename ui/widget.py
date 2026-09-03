@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import bisect
 from PyQt6.QtCore import (
+    QEasingCurve,
     QLineF,
     QPoint,
     QRectF,
     QTimer,
+    QVariantAnimation,
     Qt,
     pyqtSignal,
 )

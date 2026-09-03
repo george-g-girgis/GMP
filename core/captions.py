@@ -55,11 +55,18 @@ class _AudioCaptureWorker:
 
     def _run(self) -> None:
         import warnings
-        import soundcard as sc
+        try:
+            import soundcard as sc
+        except ModuleNotFoundError:
+            log.warning("soundcard not installed — AI captions disabled. Run: pip install soundcard")
+            return
 
         # Suppress WASAPI loopback buffer overflow warnings — our ring buffer
         # design tolerates occasional frame drops without quality impact.
-        warnings.filterwarnings("ignore", message="data discontinuity", category=sc.mediafoundation.SoundcardRuntimeWarning)
+        try:
+            warnings.filterwarnings("ignore", message="data discontinuity", category=sc.mediafoundation.SoundcardRuntimeWarning)
+        except Exception:
+            pass  # Not all platforms expose SoundcardRuntimeWarning
 
         mic = None
         while self._running:
