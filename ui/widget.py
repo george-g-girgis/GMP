@@ -10,12 +10,10 @@ from __future__ import annotations
 
 import bisect
 from PyQt6.QtCore import (
-    QEasingCurve,
     QLineF,
     QPoint,
     QRectF,
     QTimer,
-    QVariantAnimation,
     Qt,
     pyqtSignal,
 )
@@ -38,7 +36,6 @@ from PyQt6.QtWidgets import (
     QSlider,
     QVBoxLayout,
     QWidget,
-    QGraphicsOpacityEffect,
 )
 
 import ctypes
@@ -447,16 +444,9 @@ class PlayerWidget(QWidget):
         root.setContentsMargins(25, 25, 25, 25)
         root.setSpacing(0)
 
-        # ── interactive UI container (supports video-mode hover opacity animation) ──
+        # ── interactive UI container ──
         self._ui_container = QWidget(self)
         self._ui_container.setMouseTracking(True)
-        self._ui_opacity = QGraphicsOpacityEffect(self._ui_container)
-        self._ui_container.setGraphicsEffect(self._ui_opacity)
-
-        self._ui_anim = QVariantAnimation(self)
-        self._ui_anim.setDuration(220)
-        self._ui_anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
-        self._ui_anim.valueChanged.connect(self._ui_opacity.setOpacity)
 
         ui_layout = QVBoxLayout(self._ui_container)
         ui_layout.setContentsMargins(20, 20, 20, 20)
@@ -713,13 +703,6 @@ class PlayerWidget(QWidget):
         super().moveEvent(e)
         self.update()
 
-    def _animate_ui_opacity(self, target: float) -> None:
-        if hasattr(self, "_ui_anim"):
-            if self._ui_anim.state() == QVariantAnimation.State.Running:
-                self._ui_anim.stop()
-            self._ui_anim.setStartValue(self._ui_opacity.opacity())
-            self._ui_anim.setEndValue(target)
-            self._ui_anim.start()
 
     def resizeEvent(self, e) -> None:
         super().resizeEvent(e)
@@ -847,6 +830,7 @@ class PlayerWidget(QWidget):
         # Force immediate UI update — bypass the cooldown guard for this one call
         self._playpause_cooldown.stop()
         self._playing = not self._playing
+        log.info("[UI] play button clicked -> _playing now=%s", self._playing)
         self._btn_play.set_icon_text(_ICON_PAUSE if self._playing else _ICON_PLAY)
         self._playpause_cooldown.start()  # Now block poll overrides for 600ms
         self.play_pause.emit()

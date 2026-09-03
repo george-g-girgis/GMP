@@ -242,8 +242,11 @@ class _MediaWorker(QObject):
         self._running = False
 
     def trigger_play_pause(self) -> None:
+        log.info("[CTRL] trigger_play_pause called (loop=%s, queue=%s)", self._loop, self._action_queue)
         if self._loop and self._action_queue:
             asyncio.run_coroutine_threadsafe(self._action_queue.put("play_pause"), self._loop)
+        else:
+            log.warning("[CTRL] trigger_play_pause DROPPED — loop or queue not ready")
 
     def trigger_next(self) -> None:
         if self._loop and self._action_queue:
@@ -292,6 +295,7 @@ class _MediaWorker(QObject):
             while not self._action_queue.empty():
                 action = await self._action_queue.get()
                 if action == "play_pause":
+                    log.info("[CTRL] executing _ctrl_play_pause")
                     await self._ctrl_play_pause()
                 elif action == "next":
                     await self._ctrl_next()
@@ -692,7 +696,9 @@ class _MediaWorker(QObject):
 
     async def _ctrl_play_pause(self) -> None:
         s = self._get_current_session()
+        log.info("[CTRL] _ctrl_play_pause: session=%s, is_dict=%s", type(s).__name__ if s else None, isinstance(s, dict))
         if not s:
+            log.warning("[CTRL] _ctrl_play_pause: no session — command ignored")
             return
         if isinstance(s, dict):
             hwnd = s.get("hwnd")
