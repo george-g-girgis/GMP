@@ -373,6 +373,12 @@ class PlayerWidget(QWidget):
         self._seek_cooldown.setSingleShot(True)
         self._seek_cooldown.setInterval(400)
 
+        # After a manual play/pause click, ignore poll-driven playback_changed
+        # for 600ms so the optimistic state isn't clobbered before Spotify confirms.
+        self._playpause_cooldown = QTimer(self)
+        self._playpause_cooldown.setSingleShot(True)
+        self._playpause_cooldown.setInterval(600)
+
         self._is_hovered: bool = False
 
         # Live top-right date and time ticker
@@ -827,6 +833,10 @@ class PlayerWidget(QWidget):
         self.set_lyrics([])
 
     def set_playing(self, playing: bool) -> None:
+        # If a manual click just happened, don't let the poll override our
+        # optimistic state until Spotify confirms the transition.
+        if self._playpause_cooldown.isActive():
+            return
         playing = bool(playing)
         if self._playing != playing:
             self._playing = playing
@@ -834,7 +844,11 @@ class PlayerWidget(QWidget):
 
     def _on_play_clicked(self) -> None:
         """Optimistic instant feedback when play/pause is clicked."""
-        self.set_playing(not self._playing)
+        # Force immediate UI update — bypass the cooldown guard for this one call
+        self._playpause_cooldown.stop()
+        self._playing = not self._playing
+        self._btn_play.set_icon_text(_ICON_PAUSE if self._playing else _ICON_PLAY)
+        self._playpause_cooldown.start()  # Now block poll overrides for 600ms
         self.play_pause.emit()
 
     def _on_shuffle_clicked(self) -> None:
