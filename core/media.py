@@ -367,45 +367,59 @@ class _MediaWorker(QObject):
                 if selected_app == app_id or selected_app in app_id:
                     return s
 
-        # ── 2. AUTO MODE (Only playing media, strict priority) ───────
+        # ── 2. AUTO MODE ─────────────────────────────────────────────
+        # 1. Look for actively PLAYING media (strict priority: Spotify > YouTube > VLC > Other)
         playing_spotify = None
         playing_youtube = None
         playing_vlc = None
         playing_other = None
+
+        paused_spotify = None
+        paused_youtube = None
+        paused_vlc = None
+        paused_other = None
 
         # Check GSMTC sessions
         for s in sessions:
             try:
                 pb = s.get_playback_info()
                 is_playing = bool(pb and pb.playback_status and pb.playback_status.value == _PLAYING)
-                if not is_playing:
-                    continue
-
                 app_id = (s.source_app_user_model_id or "").lower()
+
                 if "spotify" in app_id:
-                    if not playing_spotify:
+                    if is_playing and not playing_spotify:
                         playing_spotify = s
+                    elif not is_playing and not paused_spotify:
+                        paused_spotify = s
                 elif any(b in app_id for b in ("brave", "chrome", "msedge", "edge", "firefox", "opera")):
-                    if not playing_youtube:
+                    if is_playing and not playing_youtube:
                         playing_youtube = s
+                    elif not is_playing and not paused_youtube:
+                        paused_youtube = s
                 else:
-                    if not playing_other:
+                    if is_playing and not playing_other:
                         playing_other = s
+                    elif not is_playing and not paused_other:
+                        paused_other = s
             except Exception:
                 pass
 
         # Check standalone players (VLC, MPC-HC, PotPlayer)
         for p in standalone:
-            if p.get("is_playing"):
-                app_id = p.get("app_id", "").lower()
-                if "vlc" in app_id:
-                    if not playing_vlc:
-                        playing_vlc = p
-                else:
-                    if not playing_other:
-                        playing_other = p
+            is_playing = p.get("is_playing", False)
+            app_id = p.get("app_id", "").lower()
+            if "vlc" in app_id:
+                if is_playing and not playing_vlc:
+                    playing_vlc = p
+                elif not is_playing and not paused_vlc:
+                    paused_vlc = p
+            else:
+                if is_playing and not playing_other:
+                    playing_other = p
+                elif not is_playing and not paused_other:
+                    paused_other = p
 
-        # Evaluate strict priority: Spotify -> YouTube -> VLC -> Other
+        # Priority 1: Actively playing session
         if playing_spotify:
             return playing_spotify
         if playing_youtube:
@@ -415,7 +429,30 @@ class _MediaWorker(QObject):
         if playing_other:
             return playing_other
 
-        # Nothing is playing -> return None!
+        # Priority 2: If nothing is playing, retain the current active session if it's still alive
+        if self._active_session is not None:
+            if isinstance(self._active_session, dict):
+                hwnd = self._active_session.get("hwnd", 0)
+                if hwnd and user32.IsWindow(wintypes.HWND(hwnd)):
+                    return self._active_session
+            else:
+                act_id = getattr(self._active_session, "source_app_user_model_id", None)
+                if act_id:
+                    for s in sessions:
+                        if s.source_app_user_model_id == act_id:
+                            return s
+
+        # Priority 3: Fall back to paused sessions (Spotify > YouTube > VLC > Other)
+        if paused_spotify:
+            return paused_spotify
+        if paused_youtube:
+            return paused_youtube
+        if paused_vlc:
+            return paused_vlc
+        if paused_other:
+            return paused_other
+
+        # Nothing open anywhere
         return None
 
     async def _poll_sessions_list(self) -> None:
@@ -691,8 +728,12 @@ class _MediaWorker(QObject):
             return None
 
     def _get_current_session(self):
-        """Reuse the target session."""
-        return self._get_target_session()
+        s = self._get_target_session()
+        if s:
+            return s
+        if self._active_session:
+            return self._active_session
+        return None
 
     async def _ctrl_play_pause(self) -> None:
         s = self._get_current_session()
@@ -706,7 +747,10 @@ class _MediaWorker(QObject):
                 user32.PostMessageW(wintypes.HWND(hwnd), 0x0100, 0x20, 0)  # WM_KEYDOWN VK_SPACE
                 user32.PostMessageW(wintypes.HWND(hwnd), 0x0101, 0x20, 0)  # WM_KEYUP VK_SPACE
         else:
-            await s.try_toggle_play_pause_async()
+            try:
+                await s.try_toggle_play_pause_async()
+            except Exception as e:
+                log.warning("[CTRL] try_toggle_play_pause_async error: %s", e)
 
     async def _ctrl_next(self) -> None:
         s = self._get_current_session()
