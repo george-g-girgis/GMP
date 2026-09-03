@@ -196,8 +196,6 @@ def scan_standalone_players() -> list[dict]:
     return results
 
 
-log = logging.getLogger(__name__)
-
 _PLAYING = 4
 
 
@@ -728,29 +726,32 @@ class _MediaWorker(QObject):
 
     async def _ctrl_shuffle(self) -> None:
         s = self._get_current_session()
-        if s:
-            pb = s.get_playback_info()
-            if pb:
-                await s.try_change_shuffle_active_async(not pb.is_shuffle_active)
+        if not s or isinstance(s, dict):
+            return  # Standalone players don't support shuffle
+        pb = s.get_playback_info()
+        if pb:
+            await s.try_change_shuffle_active_async(not pb.is_shuffle_active)
 
     async def _ctrl_repeat(self) -> None:
         s = self._get_current_session()
-        if s:
-            pb = s.get_playback_info()
-            if pb and pb.auto_repeat_mode:
-                from winrt.windows.media import MediaPlaybackAutoRepeatMode
-                cur = pb.auto_repeat_mode.value
-                nxt = 2 if cur == 0 else (1 if cur == 2 else 0)
-                await s.try_change_auto_repeat_mode_async(MediaPlaybackAutoRepeatMode(nxt))
+        if not s or isinstance(s, dict):
+            return  # Standalone players don't support repeat
+        pb = s.get_playback_info()
+        if pb and pb.auto_repeat_mode:
+            from winrt.windows.media import MediaPlaybackAutoRepeatMode
+            cur = pb.auto_repeat_mode.value
+            nxt = 2 if cur == 0 else (1 if cur == 2 else 0)
+            await s.try_change_auto_repeat_mode_async(MediaPlaybackAutoRepeatMode(nxt))
 
     async def _ctrl_seek(self, pct: float) -> None:
         s = self._get_current_session()
-        if s:
-            tl = s.get_timeline_properties()
-            if tl:
-                dur = tl.end_time.total_seconds()
-                ticks = int(dur * pct * 10_000_000)
-                await s.try_change_playback_position_async(ticks)
+        if not s or isinstance(s, dict):
+            return  # Standalone players don't support seek via GSMTC
+        tl = s.get_timeline_properties()
+        if tl:
+            dur = tl.end_time.total_seconds()
+            ticks = int(dur * pct * 10_000_000)
+            await s.try_change_playback_position_async(ticks)
 
 
 class MediaController(QObject):

@@ -54,7 +54,12 @@ class _AudioCaptureWorker:
             self._thread.join(timeout=1.0)
 
     def _run(self) -> None:
+        import warnings
         import soundcard as sc
+
+        # Suppress WASAPI loopback buffer overflow warnings — our ring buffer
+        # design tolerates occasional frame drops without quality impact.
+        warnings.filterwarnings("ignore", message="data discontinuity", category=sc.mediafoundation.SoundcardRuntimeWarning)
 
         mic = None
         while self._running:
@@ -210,8 +215,8 @@ class _CaptionWorker(QObject):
             self._last_caption = collected_text
             self.caption_ready.emit(collected_text, detected_lang)
 
-        # Pace the transcription loop (1.2s cadence)
-        time.sleep(1.2)
+        # Pace the transcription loop (1.5s cadence — balances responsiveness vs CPU)
+        time.sleep(1.5)
 
 
 class AutoCaptionEngine(QObject):

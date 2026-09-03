@@ -1,5 +1,5 @@
 """
-main.py — Entry point for the Glassmorphic Depth Music Player v1.0.
+main.py — Entry point for the Glassmorphic Depth Music Player v2.0.
 
 Orchestrates all modules:
   • ConfigManager    → centralised settings store
@@ -479,7 +479,7 @@ class App:
 
             img = Image.open(path).convert("RGB")
             # Fast subsample: resize to tiny for speed
-            img = img.resize((64, 64), Image.Resampling.LANCZOS)
+            img = img.resize((32, 32), Image.Resampling.LANCZOS)
             # Extract pixels as (R, G, B) tuples — fast batch via tobytes
             raw = img.tobytes()
             pixels = [(raw[i], raw[i+1], raw[i+2]) for i in range(0, len(raw), 3)]
@@ -589,6 +589,10 @@ def main() -> None:
         log.critical("Uncaught exception", exc_info=(exc_type, exc_value, exc_traceback))
 
     sys.excepthook = handle_exception
+
+    # Suppress noisy third-party loggers — they flood crash_log.txt
+    for _noisy in ("faster_whisper", "httpx", "ctranslate2", "soundcard"):
+        logging.getLogger(_noisy).setLevel(logging.WARNING)
 
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)

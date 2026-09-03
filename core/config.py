@@ -20,7 +20,7 @@ from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
 log = logging.getLogger(__name__)
 
-VERSION = "1.1.0"
+VERSION = "2.0.0"
 
 _CFG_DIR = Path(os.environ.get("APPDATA", Path.home())) / "GMP"
 _CFG_FILE = _CFG_DIR / "config.json"

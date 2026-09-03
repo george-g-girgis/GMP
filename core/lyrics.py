@@ -64,7 +64,7 @@ class _LyricsWorker(QObject):
         try:
             query = urllib.parse.urlencode({"track_name": track, "artist_name": artist})
             url = f"https://lrclib.net/api/get?{query}"
-            req = urllib.request.Request(url, headers={"User-Agent": "GMP/1.1 (https://github.com/george-g-girgis/GMP)"})
+            req = urllib.request.Request(url, headers={"User-Agent": "GMP/2.0 (https://github.com/george-g-girgis/GMP)"})
 
             with urllib.request.urlopen(req, timeout=3.5) as res:
                 data = json.loads(res.read().decode("utf-8"))

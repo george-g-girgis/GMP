@@ -6,7 +6,7 @@
 
 <p align="center">
   <b>A depth-layered desktop music overlay for Windows 11</b><br>
-  <sub>Glassmorphic player that embeds behind your wallpaper's foreground with AI depth, synced lyrics & auto-theming</sub>
+  <sub>Glassmorphic player that embeds behind your wallpaper's foreground with AI depth, synced lyrics, live AI captions &amp; auto-theming</sub>
 </p>
 
 <p align="center">
@@ -14,7 +14,7 @@
   <img src="https://img.shields.io/badge/platform-Windows%2011-0078D4?logo=windows&logoColor=white" alt="Windows 11">
   <img src="https://img.shields.io/badge/UI-PyQt6-41CD52?logo=qt&logoColor=white" alt="PyQt6">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License">
-  <img src="https://img.shields.io/badge/version-1.0.0-8a5cf6" alt="v1.0.0">
+  <img src="https://img.shields.io/badge/version-2.0.0-8a5cf6" alt="v2.0.0">
 </p>
 
 ---
@@ -26,13 +26,16 @@
 | 🪟 **Desktop Integration** | Embeds directly into the Windows desktop layer — sits between your wallpaper and desktop icons |
 | 🌊 **AI Depth Effect** | Uses U²-Net AI to extract wallpaper foreground, creating a parallax illusion where the player sits *behind* objects |
 | 🎤 **Synced Lyrics** | Real-time synchronized lyrics from LrcLib — line-by-line as the song plays |
+| 🎙️ **Live AI Captions** | Real-time speech-to-text captions via faster-Whisper with Silero VAD — works on any audio, any language |
+| 🖥️ **Multi-Monitor** | Full multi-screen support — choose which displays show the overlay, with per-screen depth effect |
+| 📌 **Always-on-Top Mode** | Floating card hovers above all windows across all screens; disables depth effect while active |
 | 🎨 **Auto-Theming** | Automatically extracts dominant colors from your wallpaper and applies them to the player |
 | 💎 **Glassmorphism** | Frosted glass card with blur background, configurable glow, and gradient effects |
 | 🎛️ **Full Controls** | Play/pause, next, previous, shuffle, repeat, and seek — all through the desktop widget |
 | ⚙️ **Customizable** | Every visual setting is adjustable: opacity, glow, colors, size, position, and more |
 | 🔄 **Universal Media** | Works with **any** media source — Spotify, YouTube, VLC, Apple Music, browser players |
 | 📌 **Persistent Layout** | Remembers your position, size, colors, and all settings between sessions |
-| 🚀 **Startup & Start Menu** | Windows Start Menu integration, autostart at login, and Control Panel uninstaller |
+| 🚀 **Startup &amp; Start Menu** | Windows Start Menu integration, autostart at login, and Control Panel uninstaller |
 
 ---
 
@@ -52,13 +55,13 @@ The player embeds into the Windows **WorkerW** desktop layer using the Progman `
 
 ---
 
-## 🚀 Download & Quick Start
+## 🚀 Download &amp; Quick Start
 
 ### ⚡ Option 1: Standalone Download (Recommended for End Users)
 
 No Python or Git required!
 
-1. Download **[GMP-v1.1.0-Windows-x64.zip](https://github.com/george-g-girgis/GMP/releases/latest/download/GMP-v1.1.0-Windows-x64.zip)** from the [Releases page](https://github.com/george-g-girgis/GMP/releases/latest).
+1. Download **[GMP-v2.0.0-Windows-x64.zip](https://github.com/george-g-girgis/GMP/releases/latest/download/GMP-v2.0.0-Windows-x64.zip)** from the [Releases page](https://github.com/george-g-girgis/GMP/releases/latest).
 2. Extract the folder anywhere on your PC.
 3. Run `GMP.exe`.
 4. Follow the setup wizard — GMP will automatically add itself to your **Windows Start Menu**, **System Tray**, and **Control Panel Installed Apps**!
@@ -100,8 +103,8 @@ On first run, a **Setup Wizard** will guide you through initial configuration:
 
 1. **Welcome** — Overview of GMP
 2. **Customize** — Set card opacity, glow intensity, depth effect, and AI model
-3. **AI Model Download** — Pre-downloads the neural model with a live progress indicator
-4. **Startup & Integration** — Configures Start Menu entry, Windows Apps registration, and login autostart
+3. **AI Model Download** — Pre-downloads the depth segmentation model with a live progress indicator
+4. **Startup &amp; Integration** — Configures Start Menu entry, Windows Apps registration, and login autostart
 
 After setup, GMP is available in your **Windows Start Menu** and runs silently from the **system tray** ♫.
 
@@ -113,6 +116,7 @@ After setup, GMP is available in your **Windows Start Menu** and runs silently f
 
 Right-click the purple ♫ tray icon for:
 - ⚙️ **Settings** — Open the full settings dialog
+- 📌 **Always on Top** — Toggle floating card mode (disables depth effect)
 - 🔄 **Re-segment Wallpaper** — Force a new depth mask
 - 🌊 **Toggle Depth Effect** — Enable/disable the AI depth layer
 - ✖ **Quit** — Exit GMP
@@ -141,10 +145,13 @@ Access settings via **right-click on the player** or the **system tray menu**.
 
 | Tab | Options |
 |-----|---------|
-| **Appearance** | Card opacity, glow intensity, lock layout, player size |
+| **Appearance** | Card opacity, glow intensity, lock layout, always-on-top toggle, player size |
 | **Colors** | Lyrics color, background color, glow color, auto-theme toggle |
 | **Depth Effect** | Enable/disable, AI model selection (u2net, u2netp, isnet), re-segment, clear cache |
 | **Playback** | Poll rate (smoothness vs CPU), synced lyrics toggle |
+| **Media Control** | Source mode (auto/manual), active media source selector |
+| **Captions &amp; AI** | Caption mode, language, Whisper model selection (tiny/base/small), language badge |
+| **Screens** | Multi-monitor display selection, per-screen depth effect |
 | **Startup** | Auto-launch at login, wallpaper check interval |
 | **About** | Version info, reset all settings |
 
@@ -154,20 +161,21 @@ Access settings via **right-click on the player** or the **system tray menu**.
 
 ```
 GMP/
-├── main.py              # Entry point & App controller
+├── main.py              # Entry point & App controller (multi-screen, tray, always-on-top)
 ├── uninstall.py         # Control Panel uninstaller entry point
 ├── core/
 │   ├── config.py        # Centralized settings (JSON, signals)
 │   ├── installer.py     # Start Menu shortcut & Control Panel integration
-│   ├── media.py         # WinRT GSMTC media bridge (async)
-│   ├── lyrics.py        # LrcLib synced lyrics fetcher
+│   ├── media.py         # WinRT GSMTC media bridge (async, VLC/standalone)
+│   ├── lyrics.py        # LrcLib synced lyrics fetcher (LRU cached)
+│   ├── captions.py      # Real-time AI captions (Whisper + Silero VAD, WASAPI loopback)
 │   ├── segmenter.py     # AI foreground extraction (rembg/U²-Net)
 │   ├── wallpaper.py     # Desktop wallpaper change listener
 │   └── autostart.py     # Windows registry autostart
 ├── ui/
-│   ├── overlay.py       # Desktop-embedded composite window
+│   ├── overlay.py       # Desktop-embedded composite window (multi-screen, always-on-top)
 │   ├── widget.py        # Glassmorphic player card
-│   ├── settings.py      # Tabbed settings dialog
+│   ├── settings.py      # Tabbed settings dialog (9 tabs)
 │   └── setup.py         # First-run wizard (with model download & system setup)
 ├── assets/
 │   ├── hero.jpg         # Hero banner
@@ -180,11 +188,14 @@ GMP/
 ### Key Design Decisions
 
 - **WinRT over Spotipy**: Uses Windows' native Global System Media Transport Controls — works with *any* media source, no API keys needed
+- **Non-Blocking Audio Capture**: Dedicated producer thread + ring buffer guarantees zero WASAPI loopback buffer overflows
+- **Silero VAD**: Voice Activity Detection strips background music/instruments before Whisper inference — no hallucinations
 - **Smooth Reactive Controls**: Zero-latency optimistic UI updates for play/pause and shuffle, smooth hover animations, and real-time scrub tracking
 - **Debounced Config**: All settings changes coalesce into a single disk write every 500ms
-- **Thread Safety**: Media polling, lyrics fetching, and AI segmentation each run in dedicated `QThread`s — zero UI blocking
+- **Thread Safety**: Media polling, lyrics fetching, AI captioning, and AI segmentation each run in dedicated `QThread`s — zero UI blocking
 - **Signal-Driven**: All modules communicate via `pyqtSignal` — no polling, no tight coupling
 - **Smart Caching**: Segmentation results are cached by wallpaper hash — instant load on repeat wallpapers
+- **Wallpaper Alignment**: `_fit_to_screen()` mirrors Windows 11 `WallpaperStyle: 10` (Fill) for pixel-perfect blur alignment
 
 ---
 
@@ -195,6 +206,8 @@ GMP/
 | **UI Framework** | PyQt6 |
 | **Media Detection** | WinRT (winrt-Windows.Media.Control) |
 | **Lyrics** | LrcLib API (free, no auth) |
+| **AI Captions** | faster-whisper (CTranslate2 + Silero VAD) |
+| **Audio Capture** | soundcard (WASAPI loopback) |
 | **AI Segmentation** | rembg + ONNX Runtime (U²-Net) |
 | **Image Processing** | Pillow |
 | **Desktop Integration** | Win32 API (ctypes) |
@@ -210,8 +223,10 @@ GMP/
 | **No media detected** | Make sure a media player is running (Spotify, YouTube, etc.) |
 | **Depth effect not working** | Ensure `rembg` is installed. Check tray for progress messages. |
 | **WorkerW fallback warning** | Normal on some configurations — the player still works, just uses Z-order layering instead. |
-| **Lyrics not showing** | Not all songs have synced lyrics on LrcLib. The player will show "No synced lyrics found." |
-| **High CPU usage** | Increase the poll rate in Settings → Playback (higher ms = less CPU). |
+| **Lyrics not showing** | Not all songs have synced lyrics on LrcLib. AI captions will activate automatically. |
+| **AI captions not showing** | Go to Settings → Captions & AI and ensure mode is set to "Auto" or "Speech Only". |
+| **High CPU usage** | Increase the poll rate in Settings → Playback. Choose a smaller Whisper model (tiny). |
+| **Wallpaper blur shifted** | Re-segment with tray → "Re-segment Wallpaper". Fixed in V2.0.0. |
 
 ---
 
@@ -228,6 +243,29 @@ Contributions are welcome! Feel free to:
 2. Create a feature branch (`git checkout -b feature/my-feature`)
 3. Commit your changes
 4. Push and open a Pull Request
+
+---
+
+## 📋 Changelog
+
+### v2.0.0 (2026-09-03)
+- ✨ **Multi-Monitor Support** — Choose which screens display the overlay; per-screen depth effect
+- 📌 **Always-on-Top Mode** — Floating card across all monitors; auto-disables depth effect
+- 🎙️ **Live AI Captions** — Real-time Whisper speech-to-text with Silero VAD, WASAPI loopback capture
+- 🖼️ **Wallpaper Blur Fix** — Pixel-perfect `_fit_to_screen()` alignment with Windows 11 Fill mode
+- 🔧 **Crash Fixes** — VLC/standalone player shuffle/repeat/seek crash guards
+- ⚡ **Performance** — Noisy third-party loggers suppressed, auto-theme 2× faster, CPU usage reduced
+- 🎛️ **Media Control** — Auto/manual media source selection with priority (Spotify → YouTube → VLC)
+- 🎵 **Caption Control** — Full captions settings tab with model selection and language mode
+
+### v1.1.0
+- ✨ Universal media support (VLC, all browsers, standalone players)
+- 🎛️ Manual media source selection
+- 🎤 LrcLib synced lyrics with LRU cache
+- 🔧 Wallpaper fallback detection (TranscodedWallpaper, registry)
+
+### v1.0.0
+- 🎉 Initial release
 
 ---
 
