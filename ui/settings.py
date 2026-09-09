@@ -866,6 +866,10 @@ class SettingsWindow(QDialog):
         v.addLayout(self._color_row("Lyrics Color", "lyrics_color",
                                     self._cfg.get("lyrics_color", "#aaaac3")))
 
+        # Text color (all text except lyrics)
+        v.addLayout(self._color_row("Text Color (Title, Artist, Time)", "text_color",
+                                    self._cfg.get("text_color", "#ffffff")))
+
         # Background color
         v.addLayout(self._color_row("Card Background", "bg_color",
                                     self._cfg.get("bg_color", "#16162c")))
@@ -992,13 +996,27 @@ class SettingsWindow(QDialog):
 
         v.addSpacing(16)
 
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(12)
+
         reset = QPushButton("Reset All Settings")
         reset.setStyleSheet(
             "QPushButton { background: rgba(220,50,50,0.15); border-color: rgba(220,50,50,0.4); }"
             "QPushButton:hover { background: rgba(220,50,50,0.30); }"
         )
         reset.clicked.connect(self._reset_all)
-        v.addWidget(reset, alignment=Qt.AlignmentFlag.AlignLeft)
+        btn_row.addWidget(reset)
+
+        uninstall_btn = QPushButton("Uninstall GMP…")
+        uninstall_btn.setStyleSheet(
+            "QPushButton { background: rgba(220,50,50,0.15); border-color: rgba(220,50,50,0.4); }"
+            "QPushButton:hover { background: rgba(220,50,50,0.30); }"
+        )
+        uninstall_btn.clicked.connect(self._uninstall_gmp)
+        btn_row.addWidget(uninstall_btn)
+        btn_row.addStretch()
+
+        v.addLayout(btn_row)
 
         v.addStretch()
         return w
@@ -1096,7 +1114,35 @@ class SettingsWindow(QDialog):
             self, "Reset Settings",
             "Reset all settings to defaults?\nThis cannot be undone.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:
             self._cfg.reset()
             self.close()
+
+    def _uninstall_gmp(self) -> None:
+        import sys
+        from core.installer import uninstall
+        is_frozen = getattr(sys, "frozen", False)
+        reply = QMessageBox.question(
+            self,
+            "Uninstall GMP",
+            "Are you sure you want to completely uninstall GMP (Glass Media Player)?\n\n"
+            "This will remove:\n"
+            "• Start Menu and Desktop shortcuts\n"
+            "• Windows startup registration\n"
+            "• Settings and cached data\n"
+            + ("• Application files\n" if is_frozen else ""),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            uninstall(remove_user_data=True, remove_app_files=is_frozen)
+            QMessageBox.information(
+                self,
+                "GMP Uninstalled",
+                "GMP (Glass Media Player) was successfully removed from your computer.\n"
+                "The application will now close.",
+            )
+            QGuiApplication.quit()
+            sys.exit(0)

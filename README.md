@@ -14,7 +14,7 @@
   <img src="https://img.shields.io/badge/platform-Windows%2011-0078D4?logo=windows&logoColor=white" alt="Windows 11">
   <img src="https://img.shields.io/badge/UI-PyQt6-41CD52?logo=qt&logoColor=white" alt="PyQt6">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License">
-  <img src="https://img.shields.io/badge/version-2.0.0-8a5cf6" alt="v2.0.0">
+  <img src="https://img.shields.io/badge/version-2.1.0-8a5cf6" alt="v2.1.0">
 </p>
 
 ---
@@ -61,7 +61,7 @@ The player embeds into the Windows **WorkerW** desktop layer using the Progman `
 
 No Python or Git required!
 
-1. Download **[GMP-v2.0.0-Windows-x64.zip](https://github.com/george-g-girgis/GMP/releases/latest/download/GMP-v2.0.0-Windows-x64.zip)** from the [Releases page](https://github.com/george-g-girgis/GMP/releases/latest).
+1. Download **[GMP-v2.1.0-Windows-x64.zip](https://github.com/george-g-girgis/GMP/releases/latest/download/GMP-v2.1.0-Windows-x64.zip)** from the [Releases page](https://github.com/george-g-girgis/GMP/releases/latest).
 2. Extract the folder anywhere on your PC.
 3. Run `GMP.exe`.
 4. Follow the setup wizard — GMP will automatically add itself to your **Windows Start Menu**, **System Tray**, and **Control Panel Installed Apps**!
@@ -146,14 +146,14 @@ Access settings via **right-click on the player** or the **system tray menu**.
 | Tab | Options |
 |-----|---------|
 | **Appearance** | Card opacity, glow intensity, lock layout, always-on-top toggle, player size |
-| **Colors** | Lyrics color, background color, glow color, auto-theme toggle |
+| **Colors** | Lyrics color, text color (title, artist, album, clock, time), background color, glow color, auto-theme toggle |
 | **Depth Effect** | Enable/disable, AI model selection (u2net, u2netp, isnet), re-segment, clear cache |
 | **Playback** | Poll rate (smoothness vs CPU), synced lyrics toggle |
 | **Media Control** | Source mode (auto/manual), active media source selector |
 | **Captions &amp; AI** | Caption mode, language, Whisper model selection (all models supported, medium default), language badge |
 | **Screens** | Multi-monitor display selection, per-screen depth effect |
 | **Startup** | Auto-launch at login, wallpaper check interval |
-| **About** | Version info, reset all settings |
+| **About** | Version info, reset all settings, full uninstaller |
 
 ---
 

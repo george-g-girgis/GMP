@@ -401,15 +401,40 @@ class PlayerWidget(QWidget):
                 self._lyrics_lbl.hide()
             elif self._lyrics:
                 self._lyrics_lbl.show()
-        elif key in ("lyrics_color", "bg_color"):
+        elif key in ("lyrics_color", "bg_color", "text_color"):
             self._apply_colors()
             self._cache_paint_params()
             self.update()
 
     def _apply_colors(self) -> None:
         """Apply configurable colors to labels."""
+        # 1. Lyrics line color (kept separate)
         lc = self._cfg.get("lyrics_color", "#aaaac3")
         self._lyrics_lbl.setStyleSheet(f"color:{lc};background:transparent;")
+
+        # 2. General player text color (all labels except lyrics)
+        tc = self._cfg.get("text_color", "#ffffff")
+        tc_color = QColor(tc)
+        if not tc_color.isValid():
+            tc_color = QColor(255, 255, 255)
+            tc = "#ffffff"
+
+        r, g, b = tc_color.red(), tc_color.green(), tc_color.blue()
+        dim_rgba = f"rgba({r},{g},{b},0.75)"
+        sub_rgba = f"rgba({r},{g},{b},0.60)"
+
+        if hasattr(self, "_title"):
+            self._title.setStyleSheet(f"color:{tc};background:transparent;")
+        if hasattr(self, "_artist"):
+            self._artist.setStyleSheet(f"color:{dim_rgba};background:transparent;")
+        if hasattr(self, "_album"):
+            self._album.setStyleSheet(f"color:{sub_rgba};background:transparent;")
+        if hasattr(self, "_clock_lbl"):
+            self._clock_lbl.setStyleSheet(f"color:{tc};background:transparent;")
+        if hasattr(self, "_date_lbl"):
+            self._date_lbl.setStyleSheet(f"color:{dim_rgba};background:transparent;")
+        if hasattr(self, "_time"):
+            self._time.setStyleSheet(f"color:{dim_rgba};background:transparent;")
 
     def _cache_paint_params(self) -> None:
         """Pre-cache frequently-used paint values to avoid per-frame allocations."""
@@ -556,6 +581,7 @@ class PlayerWidget(QWidget):
         # Set initial datetime and start timer
         self._update_datetime()
         self._datetime_timer.start()
+        self._apply_colors()
 
         # Enable right-click context menu
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)

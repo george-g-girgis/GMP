@@ -593,6 +593,12 @@ def main() -> None:
 
     sys.excepthook = handle_exception
 
+    # Handle uninstall command line flag from Windows Settings / Control Panel
+    if "--uninstall" in sys.argv or "-u" in sys.argv:
+        from core.installer import run_uninstaller_gui_or_cli
+        run_uninstaller_gui_or_cli()
+        return
+
     # Suppress noisy third-party loggers — they flood crash_log.txt
     for _noisy in ("faster_whisper", "httpx", "ctranslate2", "soundcard"):
         logging.getLogger(_noisy).setLevel(logging.WARNING)
@@ -607,6 +613,13 @@ def main() -> None:
     app.setApplicationName("GMP — Glass Media Player")
     app.setApplicationVersion(VERSION)
     app.setWindowIcon(_make_icon())
+
+    # Ensure Windows Start Menu shortcut and Add/Remove Programs registry are registered/updated
+    try:
+        from core.installer import install_system_entries
+        install_system_entries()
+    except Exception as exc:
+        log.warning("System entry update notice: %s", exc)
 
     # Check for first run → show setup wizard
     cfg = ConfigManager()

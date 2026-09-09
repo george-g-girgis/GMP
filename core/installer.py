@@ -5,7 +5,7 @@ Manages:
 1. Start Menu shortcut (.lnk) in %APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs
 2. Windows Control Panel / Settings "Installed Apps" registration via
    HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\GMP
-3. Full clean uninstallation of shortcuts, autostart, and registry entries.
+3. Full clean uninstallation of shortcuts, autostart, registry entries, and application data.
 """
 
 from __future__ import annotations
@@ -26,6 +26,9 @@ _UNINSTALL_REG_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\GMP"
 
 def get_project_root() -> Path:
     """Get the absolute root path of the GMP application."""
+    if getattr(sys, "frozen", False):
+        # When frozen with PyInstaller (onedir mode), sys.executable is in the root directory (GMP/GMP.exe)
+        return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent.parent
 
 
@@ -34,6 +37,12 @@ def get_start_menu_shortcut_path() -> Path:
     appdata = os.environ.get("APPDATA", str(Path.home()))
     programs = Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs"
     return programs / "GMP.lnk"
+
+
+def get_desktop_shortcut_path() -> Path:
+    """Get the path to the Desktop shortcut."""
+    userprofile = os.environ.get("USERPROFILE", str(Path.home()))
+    return Path(userprofile) / "Desktop" / "GMP.lnk"
 
 
 def create_start_menu_shortcut() -> bool:
@@ -45,7 +54,7 @@ def create_start_menu_shortcut() -> bool:
     if getattr(sys, "frozen", False):
         target = str(sys.executable)
         args = ""
-        icon = target
+        icon = str(ico_path) if ico_path.exists() else target
     else:
         vbs_path = root / "Launch GMP.vbs"
         target = str(vbs_path) if vbs_path.exists() else str(root / ".venv" / "Scripts" / "pythonw.exe")
@@ -100,6 +109,19 @@ def remove_start_menu_shortcut() -> bool:
         return False
 
 
+def remove_desktop_shortcut() -> bool:
+    """Remove Desktop shortcut if present."""
+    p = get_desktop_shortcut_path()
+    try:
+        if p.exists():
+            p.unlink()
+            log.info("Desktop shortcut removed: %s", p)
+        return True
+    except Exception as exc:
+        log.error("Failed to remove Desktop shortcut: %s", exc)
+        return False
+
+
 def register_uninstall_entry() -> bool:
     """
     Register GMP in Windows Control Panel / Settings 'Installed Apps'
@@ -109,7 +131,7 @@ def register_uninstall_entry() -> bool:
     ico_path = root / "assets" / "app.ico"
 
     if getattr(sys, "frozen", False):
-        display_icon = str(sys.executable)
+        display_icon = str(ico_path) if ico_path.exists() else str(sys.executable)
         uninstall_cmd = f'"{sys.executable}" --uninstall'
         quiet_uninstall_cmd = f'"{sys.executable}" --uninstall --silent'
     else:
@@ -126,7 +148,7 @@ def register_uninstall_entry() -> bool:
         winreg.SetValueEx(key, "DisplayName", 0, winreg.REG_SZ, "GMP — Glass Media Player")
         winreg.SetValueEx(key, "DisplayVersion", 0, winreg.REG_SZ, VERSION)
         winreg.SetValueEx(key, "Publisher", 0, winreg.REG_SZ, "GGG")
-        winreg.SetValueEx(key, "DisplayIcon", 0, winreg.REG_SZ, str(ico_path) if ico_path.exists() else str(pythonw))
+        winreg.SetValueEx(key, "DisplayIcon", 0, winreg.REG_SZ, display_icon)
         winreg.SetValueEx(key, "InstallLocation", 0, winreg.REG_SZ, str(root))
         winreg.SetValueEx(key, "UninstallString", 0, winreg.REG_SZ, uninstall_cmd)
         winreg.SetValueEx(key, "QuietUninstallString", 0, winreg.REG_SZ, quiet_uninstall_cmd)
@@ -155,6 +177,41 @@ def unregister_uninstall_entry() -> bool:
         return False
 
 
+def terminate_other_gmp_processes() -> None:
+    """Terminate other running instances of GMP."""
+    current_pid = os.getpid()
+    try:
+        import subprocess
+        out = subprocess.check_output(
+            ["tasklist", "/FI", "IMAGENAME eq GMP.exe", "/FO", "CSV", "/NH"],
+            text=True, stderr=subprocess.DEVNULL
+        )
+        for line in out.strip().splitlines():
+            parts = [p.strip(' "') for p in line.split(",")]
+            if len(parts) >= 2 and parts[1].isdigit():
+                pid = int(parts[1])
+                if pid != current_pid:
+                    subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True)
+    except Exception as exc:
+        log.warning("Could not terminate other GMP processes: %s", exc)
+
+
+def schedule_app_directory_deletion(root_dir: Path) -> None:
+    """Spawn a detached cmd process to delete the application directory after process exit."""
+    try:
+        import subprocess
+        # Wait 2 seconds for current process to exit, then remove directory
+        cmd = f'ping 127.0.0.1 -n 3 >nul & rd /s /q "{root_dir}"'
+        subprocess.Popen(
+            ["cmd.exe", "/c", cmd],
+            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW,
+            close_fds=True
+        )
+        log.info("Scheduled application directory self-delete: %s", root_dir)
+    except Exception as exc:
+        log.warning("Could not schedule self-delete: %s", exc)
+
+
 def install_system_entries() -> bool:
     """Register both Start Menu shortcut and Windows Add/Remove Programs entry."""
     s1 = create_start_menu_shortcut()
@@ -162,19 +219,23 @@ def install_system_entries() -> bool:
     return s1 and s2
 
 
-def uninstall(remove_user_data: bool = True) -> bool:
+def uninstall(remove_user_data: bool = True, remove_app_files: bool = False) -> bool:
     """
     Perform a complete uninstall of GMP system registrations:
-    - Removes Start Menu shortcut
+    - Closes any running GMP instances
+    - Removes Start Menu and Desktop shortcuts
     - Removes Autostart registry key
     - Removes Control Panel Uninstall entry
     - Cleans config & cache data if requested
+    - Schedules self-delete of application files if requested
     """
     from core.autostart import disable as disable_autostart
 
     log.info("Starting GMP uninstallation...")
+    terminate_other_gmp_processes()
     disable_autostart()
     remove_start_menu_shortcut()
+    remove_desktop_shortcut()
     unregister_uninstall_entry()
 
     if remove_user_data:
@@ -194,5 +255,82 @@ def uninstall(remove_user_data: bool = True) -> bool:
             except Exception as e:
                 log.warning("Could not remove cache dir: %s", e)
 
+        # Remove crash logs in project root
+        root = get_project_root()
+        for log_name in ("crash.txt", "crash_log.txt"):
+            log_file = root / log_name
+            if log_file.exists():
+                try:
+                    log_file.unlink()
+                except Exception:
+                    pass
+
+    if remove_app_files:
+        root = get_project_root()
+        schedule_app_directory_deletion(root)
+
     log.info("GMP uninstallation completed.")
     return True
+
+
+def run_uninstaller_gui_or_cli() -> None:
+    """Entrypoint when uninstaller is invoked from CLI, Windows Uninstall, or desktop."""
+    is_silent = "--silent" in sys.argv or "-s" in sys.argv
+    is_frozen = getattr(sys, "frozen", False)
+
+    if is_silent:
+        uninstall(remove_user_data=True, remove_app_files=is_frozen)
+        sys.exit(0)
+
+    try:
+        from PyQt6.QtGui import QIcon
+        from PyQt6.QtWidgets import QApplication, QMessageBox
+
+        app = QApplication.instance()
+        if app is None:
+            app = QApplication(sys.argv)
+        ico_file = get_project_root() / "assets" / "app.ico"
+        if ico_file.exists():
+            app.setWindowIcon(QIcon(str(ico_file)))
+
+        reply = QMessageBox.question(
+            None,
+            "Uninstall GMP",
+            "Are you sure you want to completely uninstall GMP (Glass Media Player)?\n\n"
+            "This will remove:\n"
+            "• Start Menu and Desktop shortcuts\n"
+            "• Windows startup registration\n"
+            "• Settings and cached data\n"
+            + ("• Application files\n" if is_frozen else ""),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            uninstall(remove_user_data=True, remove_app_files=is_frozen)
+            QMessageBox.information(
+                None,
+                "GMP Uninstalled",
+                "GMP (Glass Media Player) was successfully removed from your computer.",
+            )
+            sys.exit(0)
+    except Exception:
+        import ctypes
+        MB_YESNO = 4
+        MB_ICONQUESTION = 0x20
+        IDYES = 6
+        res = ctypes.windll.user32.MessageBoxW(
+            0,
+            "Are you sure you want to completely uninstall GMP (Glass Media Player)?",
+            "Uninstall GMP",
+            MB_YESNO | MB_ICONQUESTION,
+        )
+        if res == IDYES:
+            uninstall(remove_user_data=True, remove_app_files=is_frozen)
+            ctypes.windll.user32.MessageBoxW(
+                0,
+                "GMP was successfully removed from your computer.",
+                "GMP Uninstalled",
+                0x40,
+            )
+            sys.exit(0)
