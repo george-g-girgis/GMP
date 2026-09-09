@@ -27,6 +27,29 @@ _CHUNK_SECONDS = 0.25        # 250ms capture slices for zero-drop loopback
 _WINDOW_SAMPLES = int(_SAMPLE_RATE * _WINDOW_SECONDS)
 _CHUNK_SAMPLES = int(_SAMPLE_RATE * _CHUNK_SECONDS)
 
+# All supported faster-whisper AI voice models
+WHISPER_MODELS: list[tuple[str, str]] = [
+    ("Medium (~1.5 GB, multilingual) — Recommended / Default", "medium"),
+    ("Medium.en (~1.5 GB, English only)", "medium.en"),
+    ("Base (~140 MB, multilingual, fast)", "base"),
+    ("Base.en (~140 MB, English only, fast)", "base.en"),
+    ("Small (~460 MB, multilingual, accurate)", "small"),
+    ("Small.en (~460 MB, English only, accurate)", "small.en"),
+    ("Tiny (~75 MB, multilingual, ultra-fast)", "tiny"),
+    ("Tiny.en (~75 MB, English only, ultra-fast)", "tiny.en"),
+    ("Large-v3-Turbo (~1.6 GB, multilingual, high accuracy)", "large-v3-turbo"),
+    ("Large-v3 (~3.0 GB, multilingual, state of the art)", "large-v3"),
+    ("Large-v2 (~3.0 GB, multilingual)", "large-v2"),
+    ("Large-v1 (~3.0 GB, multilingual)", "large-v1"),
+    ("Distil-Medium.en (~790 MB, English only, fast)", "distil-medium.en"),
+    ("Distil-Small.en (~330 MB, English only, ultra-fast)", "distil-small.en"),
+    ("Distil-Large-v3 (~1.5 GB, multilingual, fast)", "distil-large-v3"),
+    ("Distil-Large-v3.5 (~1.5 GB, multilingual, fast)", "distil-large-v3.5"),
+    ("Distil-Large-v2 (~1.5 GB, multilingual, fast)", "distil-large-v2"),
+    ("Turbo (alias for Large-v3-Turbo)", "turbo"),
+    ("Large (alias for Large-v3)", "large"),
+]
+
 
 class _AudioCaptureWorker:
     """Dedicated thread for non-blocking loopback audio acquisition."""
@@ -160,7 +183,7 @@ class _CaptionWorker(QObject):
         log.info("AutoCaption worker stopped")
 
     def _ensure_model(self) -> None:
-        target_model = self._cfg.get("captions_whisper_model", "tiny") if self._cfg else "tiny"
+        target_model = self._cfg.get("captions_whisper_model", "medium") if self._cfg else "medium"
         if self._model is None or self._model_name != target_model:
             self.status_changed.emit(f"Loading Whisper AI ({target_model})…")
             from faster_whisper import WhisperModel

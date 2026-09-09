@@ -32,6 +32,7 @@ from PyQt6.QtWidgets import (
 )
 
 from core.config import ConfigManager, VERSION
+from core.captions import WHISPER_MODELS
 
 log = logging.getLogger(__name__)
 
@@ -663,16 +664,20 @@ class SettingsWindow(QDialog):
         model_row.addWidget(model_lbl)
 
         model_combo = QComboBox()
-        model_combo.addItem("Tiny (~75 MB, ultra-fast 300ms — Recommended for live speech)", "tiny")
-        model_combo.addItem("Distil-Small English (~330 MB, ultra-fast & high accuracy)", "distil-small.en")
-        model_combo.addItem("Base (~140 MB, multilingual)", "base")
-        model_combo.addItem("Small (~460 MB, high accuracy multilingual)", "small")
+        for label, model_id in WHISPER_MODELS:
+            model_combo.addItem(label, model_id)
 
-        cur_model = self._cfg.get("captions_whisper_model", "tiny")
+        cur_model = self._cfg.get("captions_whisper_model", "medium")
+        matched = False
         for i in range(model_combo.count()):
             if model_combo.itemData(i) == cur_model:
                 model_combo.setCurrentIndex(i)
+                matched = True
                 break
+        if not matched:
+            model_combo.addItem(f"Custom ({cur_model})", cur_model)
+            model_combo.setCurrentIndex(model_combo.count() - 1)
+
         model_combo.currentIndexChanged.connect(
             lambda idx: self._cfg.set("captions_whisper_model", model_combo.itemData(idx))
         )

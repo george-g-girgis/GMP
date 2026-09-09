@@ -150,7 +150,7 @@ Access settings via **right-click on the player** or the **system tray menu**.
 | **Depth Effect** | Enable/disable, AI model selection (u2net, u2netp, isnet), re-segment, clear cache |
 | **Playback** | Poll rate (smoothness vs CPU), synced lyrics toggle |
 | **Media Control** | Source mode (auto/manual), active media source selector |
-| **Captions &amp; AI** | Caption mode, language, Whisper model selection (tiny/base/small), language badge |
+| **Captions &amp; AI** | Caption mode, language, Whisper model selection (all models supported, medium default), language badge |
 | **Screens** | Multi-monitor display selection, per-screen depth effect |
 | **Startup** | Auto-launch at login, wallpaper check interval |
 | **About** | Version info, reset all settings |

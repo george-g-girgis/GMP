@@ -16,6 +16,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.config import ConfigManager, VERSION
+from core.captions import WHISPER_MODELS
 
 from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QRect, QThread, QObject, pyqtSignal, QTimer
 from PyQt6.QtGui import (
@@ -250,13 +251,13 @@ def _accent_btn(text: str) -> QPushButton:
 #  Background model downloader
 # ─────────────────────────────────────────────────────────────────────
 class _ModelDownloadWorker(QObject):
-    """Downloads the rembg depth model and the Whisper Base captions model in a background thread."""
+    """Downloads the rembg depth model and the Whisper captions model in a background thread."""
 
     status = pyqtSignal(str)
     finished = pyqtSignal()
     error = pyqtSignal(str)
 
-    def __init__(self, depth_model: str = "u2net", captions_model: str = "base", download_depth: bool = True) -> None:
+    def __init__(self, depth_model: str = "u2net", captions_model: str = "medium", download_depth: bool = True) -> None:
         super().__init__()
         self._depth_model = depth_model
         self._captions_model = captions_model
@@ -270,8 +271,8 @@ class _ModelDownloadWorker(QObject):
                 from rembg import new_session
                 new_session(model_name=self._depth_model)
 
-            # 2. Captions AI Model (Base)
-            self.status.emit(f"Loading Whisper AI Captions Model ({self._captions_model}, ~140 MB)…")
+            # 2. Captions AI Model
+            self.status.emit(f"Loading Whisper AI Captions Model ({self._captions_model})…")
             from faster_whisper import WhisperModel
             WhisperModel(self._captions_model, device="cpu", compute_type="int8")
 
@@ -424,14 +425,18 @@ class SetupWizard(QDialog):
         whisper_lbl = QLabel("Captions Model")
         whisper_lbl.setFixedWidth(110)
         whisper_combo = QComboBox()
-        whisper_combo.addItem("Base (~140 MB, recommended)", "base")
-        whisper_combo.addItem("Small (~460 MB, higher accuracy)", "small")
-        cur_w = self._cfg.get("captions_whisper_model", "base")
-        if cur_w == "small":
-            whisper_combo.setCurrentIndex(1)
-        else:
-            whisper_combo.setCurrentIndex(0)
-            self._cfg.set("captions_whisper_model", "base", save=False)
+        for label, model_id in WHISPER_MODELS:
+            whisper_combo.addItem(label, model_id)
+        cur_w = self._cfg.get("captions_whisper_model", "medium")
+        matched = False
+        for i in range(whisper_combo.count()):
+            if whisper_combo.itemData(i) == cur_w:
+                whisper_combo.setCurrentIndex(i)
+                matched = True
+                break
+        if not matched:
+            whisper_combo.addItem(f"Custom ({cur_w})", cur_w)
+            whisper_combo.setCurrentIndex(whisper_combo.count() - 1)
         whisper_combo.currentIndexChanged.connect(
             lambda idx: self._cfg.set("captions_whisper_model", whisper_combo.itemData(idx), save=False)
         )
@@ -525,10 +530,7 @@ class SetupWizard(QDialog):
 
         download_depth = self._cfg.get("depth_enabled", True)
         depth_model = self._cfg.get("model", "u2net")
-        captions_model = self._cfg.get("captions_whisper_model", "base")
-        if captions_model == "tiny":
-            captions_model = "base"
-            self._cfg.set("captions_whisper_model", "base")
+        captions_model = self._cfg.get("captions_whisper_model", "medium")
 
         self._dl_status.setText("Initializing AI models…")
 
@@ -550,8 +552,9 @@ class SetupWizard(QDialog):
 
     def _on_dl_finished(self) -> None:
         self._model_ready = True
+        captions_model = self._cfg.get("captions_whisper_model", "medium")
         self._dl_title.setText("AI Models Ready ✓")
-        self._dl_desc.setText("Depth effect and Whisper AI live captions (Base) are downloaded and ready to use.")
+        self._dl_desc.setText(f"Depth effect and Whisper AI live captions ({captions_model}) are downloaded and ready to use.")
         self._dl_progress.setRange(0, 100)
         self._dl_progress.setValue(100)
         self._dl_status.setText("Complete!")
